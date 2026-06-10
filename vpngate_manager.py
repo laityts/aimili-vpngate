@@ -1262,7 +1262,7 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         else:
             return {}
 
-def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
+def test_multiple_nodes(node_ids: list[str], progress_cb=None) -> list[dict[str, Any]]:
     with lock:
         nodes = read_nodes()
         to_test = [n for n in nodes if n.get("id") in node_ids]
@@ -1328,6 +1328,9 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         return temp_node
 
     updated_nodes_map = {}
+    total = len(to_test)
+    done = 0
+    available_count = 0
     max_workers = min(5, max(1, len(to_test)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(test_worker, (idx, n)): n["id"] for idx, n in enumerate(to_test)}
@@ -1343,6 +1346,14 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                     "probe_message": f"Test exception: {e}",
                     "latency_ms": 0
                 }
+            done += 1
+            if updated_nodes_map[nid].get("probe_status") == "available":
+                available_count += 1
+            if progress_cb is not None:
+                try:
+                    progress_cb(done, total, available_count)
+                except Exception:
+                    pass
                 
     # 批量查询并丰富可用节点的地理及 ISP 信息，防止并发时被定位 API 接口限流
     successful_nodes = [res for res in updated_nodes_map.values() if res.get("probe_status") == "available"]
@@ -1461,7 +1472,7 @@ def connect_node(node_id: str) -> str:
             print("[连接] 正在建立其他连接中，跳过此请求", flush=True)
             raise RuntimeError("当前已有连接或节点检测任务正在运行，请稍后再试")
         is_connecting = True
-        set_state(is_connecting=True, active_node_latency="正在连接", last_check_message=f"正在初始化连接配置: {node_id}")
+        set_state(is_connecting=True, connecting_phase="connecting", active_node_latency="正在连接", last_check_message=f"正在初始化连接配置: {node_id}")
         
     try:
         log_to_json("INFO", "VPN", f"开始连接节点: {node_id}")
@@ -1669,8 +1680,14 @@ def maintain_valid_nodes(force: bool = False) -> str:
         print(f"[周期检测] {msg}", flush=True)
         log_to_json("INFO", "Main", msg)
         
-        set_state(is_connecting=True, last_check_message="正在并发检测所有节点可用性...")
-        test_multiple_nodes(to_test_ids)
+        set_state(is_connecting=True, connecting_phase="scanning",
+                  last_check_message=f"正在检测节点可用性 (0/{len(to_test_ids)})...")
+
+        def _scan_progress(done, total, available):
+            set_state(is_connecting=True, connecting_phase="scanning",
+                      last_check_message=f"正在检测节点可用性 ({done}/{total})，已发现 {available} 个可用节点...")
+
+        test_multiple_nodes(to_test_ids, progress_cb=_scan_progress)
         is_connecting = False
         
         with lock:
@@ -3739,6 +3756,14 @@ function render(){
   // Render separated Active Node Card
   const activeCardContainer = $("active_node_card");
   if (state.is_connecting && !activeNode) {
+    const isScanning = state.connecting_phase === "scanning";
+    const phaseBadge = isScanning ? "正在检测" : "正在连接";
+    const phaseTitle = isScanning
+      ? "正在检测节点池"
+      : (state.active_node_latency || "正在连接节点...");
+    const phaseHint = isScanning
+      ? "正在逐个测试候选节点的连通性与延迟，请稍候..."
+      : "正在与最优节点建立加密隧道，请稍候...";
     activeCardContainer.innerHTML = `
       <div class="active-card" style="background: var(--bg-surface); border-color: var(--warning); box-shadow: 0 0 15px rgba(245, 158, 11, 0.15);">
         <div class="active-card-info">
@@ -3747,11 +3772,11 @@ function render(){
           </div>
           <div class="active-card-details">
             <div class="active-card-title" style="color: var(--text-primary);">
-              <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>正在连接</span>
-              <strong>${esc(state.active_node_latency || '正在连接...')}</strong>
+              <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>${phaseBadge}</span>
+              <strong>${esc(phaseTitle)}</strong>
             </div>
             <div class="active-card-meta" style="margin-top: 4px;">
-              ${esc(state.last_check_message || '正在与 VPN 节点建立加密隧道，请稍候...')}
+              ${esc(state.last_check_message || phaseHint)}
             </div>
           </div>
         </div>
