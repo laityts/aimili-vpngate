@@ -2032,7 +2032,7 @@ INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>AimiliVPN 节点池管理系统</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -2944,6 +2944,185 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--text-secondary);
       line-height: 1.3;
     }
+
+    /* ============================================================
+       移动端适配 (Mobile adaptation)
+       策略:节点表格在窄屏转为卡片、触摸目标 ≥44px、模态全屏化、
+       消除横向溢出、安全区适配。桌面端样式保持不变。
+       ============================================================ */
+
+    /* 安全区:刘海屏/圆角屏左右留白 */
+    body {
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+    }
+
+    /* 触摸设备:hover 位移会造成点击粘滞,关闭并改用 :active 反馈 */
+    @media (hover: none) {
+      button:hover, .stat:hover, .vps-item:hover,
+      .header-badge-link:hover, .btn-telegram:hover { transform: none; }
+      tr:active { background: rgba(255, 255, 255, 0.04); }
+    }
+
+    /* 平板及以下:容器留白收敛 */
+    @media (max-width: 900px) {
+      main { padding: 20px; }
+      header { padding: 14px 20px; }
+    }
+
+    /* 手机:≤640px —— 主断点 */
+    @media (max-width: 640px) {
+      h1 { font-size: 17px; }
+      h1 svg { width: 20px; height: 20px; }
+      main { padding: 14px; }
+
+      /* 顶部操作按钮:2×2 网格(用 grid 规避 flex 特异性冲突),触摸目标拉高 */
+      header { padding: 12px 14px; gap: 10px; }
+      .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+      .btn-group > * { width: 100%; }
+      .btn-group .dropdown button, .btn-group .btn-telegram { width: 100%; }
+      button, .btn-telegram { height: 44px; font-size: 14px; }
+      .dropdown-content { min-width: 180px; }
+      /* 下拉菜单项点按区放大到 ≥44px */
+      .dropdown-content a { padding: 13px 16px; font-size: 14px; min-height: 44px; box-sizing: border-box; }
+
+      /* 活动节点卡片纵向堆叠 */
+      .active-card { flex-direction: column; align-items: stretch; gap: 14px; padding: 18px; }
+      .active-card-info { gap: 14px; }
+      .active-card button, .active-card .btn-danger { width: 100%; height: 44px !important; }
+      .active-card-value { font-size: 18px !important; word-break: break-all; }
+      .active-card-meta { flex-direction: column; gap: 6px; }
+      .active-card-meta span { margin-left: 0 !important; }
+
+      /* 统计卡:单列 */
+      .stats { grid-template-columns: 1fr; gap: 12px; }
+      .stat { padding: 16px; }
+      .stat strong { font-size: 26px; }
+
+      /* flex-row-container 子项放弃 320px 下限,避免横向溢出 */
+      .flex-row-container { gap: 14px; }
+      .flex-row-container > * { min-width: 100% !important; flex-basis: 100% !important; }
+
+      /* 过滤工具栏:每个控件占满整行,触摸目标拉高 */
+      .toolbar { padding: 12px; gap: 10px; }
+      .toolbar select { width: 100%; height: 46px; }
+      .toolbar input { min-width: 0; width: 100%; height: 46px; }
+      .toolbar #btn_favorites { margin-left: 0 !important; width: 100%; height: 46px !important; }
+
+      /* 收藏面板:按钮占满 */
+      #favorites_panel { padding: 16px; }
+      #btn_toggle_fav_routing { width: 100%; }
+
+      /* 核心:节点表格 → 卡片化 */
+      .table-wrapper { background: transparent; border: none; box-shadow: none; }
+      .table-container { overflow-x: visible; }
+      table, thead, tbody, tr, td { display: block; width: 100%; box-sizing: border-box; }
+      thead { display: none; }                 /* 表头隐藏,改用每格 data-label */
+      table { table-layout: auto; }
+      tbody tr {
+        background: var(--bg-surface);
+        border: 1px solid var(--border-color);
+        border-radius: 14px;
+        padding: 6px 14px;
+        margin-bottom: 14px;
+        box-shadow: 0 4px 18px rgba(0,0,0,0.18);
+      }
+      tbody tr:hover { background: var(--bg-surface); }
+      .active-row {
+        outline: none !important;
+        border: 1px solid var(--success) !important;
+        background: var(--active-row-bg) !important;
+      }
+      tbody td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--border-color);
+        white-space: normal !important;
+        overflow: visible !important;
+        max-width: none !important;
+        text-align: right;
+        font-size: 14px;
+        min-height: 24px;
+        word-break: break-word;
+      }
+      .active-row td { border-top: none; }
+      tbody td:last-child { border-bottom: none; }
+      /* data-label 作为每行左侧标题 */
+      tbody td::before {
+        content: attr(data-label);
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--text-secondary);
+        text-align: left;
+        flex: 0 0 auto;
+        margin-right: 12px;
+      }
+      /* 操作单元格:按钮平铺,无标题 */
+      tbody td[data-label="操作"] { flex-direction: column; align-items: stretch; gap: 8px; }
+      tbody td[data-label="操作"]::before { display: none; }
+      .table-actions { width: 100%; gap: 8px; }
+      .table-actions > * { flex: 1; }
+      .connect-btn, .test-btn { height: 44px !important; font-size: 13px; }
+      /* 空状态单元格还原为整块 */
+      tbody td[colspan] { justify-content: center; text-align: center; }
+      tbody td[colspan]::before { display: none; }
+
+      /* 分页:居中换行,按钮加大 */
+      .pagination-container { flex-direction: column; gap: 12px; padding: 14px !important; }
+      .pagination-container > div { justify-content: center; flex-wrap: wrap; }
+      #btn_first_page, #btn_prev_page, #btn_next_page, #btn_last_page { height: 44px !important; }
+
+      /* 模态:贴近全屏,内边距收敛,可滚动 */
+      .modal { padding: 0; align-items: flex-end; }
+      .modal-content {
+        width: 100% !important;
+        max-width: 100% !important;
+        max-height: 92vh;
+        max-height: 92dvh;            /* 动态视口高度:避免 iOS 工具栏遮挡贴底按钮 */
+        overflow-y: auto;
+        padding: 22px 18px;
+        padding-bottom: calc(22px + env(safe-area-inset-bottom));
+        border-radius: 20px 20px 0 0;
+        animation: sheetUp 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .option-group { grid-template-columns: 1fr; }
+      .input-field { height: 46px; font-size: 16px; } /* 16px 防 iOS 聚焦缩放 */
+
+      /* 右侧竖排 VPS 推荐条改为底部小药丸,避免遮挡内容 */
+      .vps-recommend-tab {
+        writing-mode: horizontal-tb;
+        top: auto;
+        bottom: calc(12px + env(safe-area-inset-bottom));
+        right: 12px;
+        transform: none;
+        width: auto;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border-right: 1px solid var(--border-color-hover);
+        font-size: 12px;
+      }
+      .vps-recommend-tab:hover { padding-right: 14px; }
+    }
+
+    @keyframes sheetUp {
+      from { transform: translateY(24px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    /* 超窄屏:≤380px 进一步收敛 */
+    @media (max-width: 380px) {
+      .btn-group > *, .btn-group .dropdown { flex-basis: 100%; }
+      h1 { font-size: 16px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .modal-content { animation: none; }
+    }
   </style>
 </head>
 <body>
@@ -3703,7 +3882,7 @@ function render(){
 
   // Render table rows
   if (currentPageNodes.length === 0) {
-    $("rows").innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
+    $("rows").innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
   } else {
     $("rows").innerHTML=currentPageNodes.map(n=>{
       if (!n) return '';
@@ -3735,12 +3914,12 @@ function render(){
         : `<button class="test-btn" style="color: var(--text-secondary); border-color: var(--border-color); padding: 0 8px; height: 30px;" onclick="toggleFavorite('${esc(n.id)}', event)">☆ 收藏</button>`;
 
       return `<tr ${rowClass}>
-        <td><span class="badge ${badgeClass}">${badgeText}</span></td>
-        <td class="mono" style="white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;" title="${esc(n.ip||n.remote_host)}:${n.remote_port||""}">${esc(n.ip||n.remote_host)}:${n.remote_port||""}</td>
-        <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(displayLocation)}">${esc(displayLocation)}</td>
-        <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(n.owner||n.as_name||"-")}">${esc(n.owner||n.as_name||"-")}</td>
-        <td style="white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis;" title="${esc(translateIpType(n.ip_type))}">${esc(translateIpType(n.ip_type))}</td>
-        <td>
+        <td data-label="状态"><span class="badge ${badgeClass}">${badgeText}</span></td>
+        <td data-label="IP : 端口" class="mono" style="white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;" title="${esc(n.ip||n.remote_host)}:${n.remote_port||""}">${esc(n.ip||n.remote_host)}:${n.remote_port||""}</td>
+        <td data-label="物理位置" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(displayLocation)}">${esc(displayLocation)}</td>
+        <td data-label="运营主体 / ISP" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(n.owner||n.as_name||"-")}">${esc(n.owner||n.as_name||"-")}</td>
+        <td data-label="IP 类型" style="white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis;" title="${esc(translateIpType(n.ip_type))}">${esc(translateIpType(n.ip_type))}</td>
+        <td data-label="操作">
           <div class="table-actions">
             ${favBtn}
             ${connectBtn}
