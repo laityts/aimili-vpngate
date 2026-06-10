@@ -380,6 +380,8 @@ def show_current():
     print(format_line("路由模式", mode_map.get(routing_mode, routing_mode)))
     if routing_mode == "fixed_ip":
         print(format_line("固定节点 ID", cfg.get("fixed_node_id") or "(未指定)"))
+    ip_type = cfg.get("routing_ip_type", "all")
+    print(format_line("IP出站类型过滤", IP_TYPE_LABELS.get(ip_type, ip_type)))
     print("-------------------------------------------------------")
     if is_connecting:
         msg = state.get("last_check_message") or "正在建立连接..."
@@ -513,6 +515,55 @@ def switch_node():
     restart_service()
     print("配置已生效,服务正在重启并连接最佳节点。可运行 'ml current' 查看状态。")
     print(f"{yellow}提示: 此操作会固定到该节点;若希望后续自动跟随最佳节点变化,可运行 'ml auto'。{reset}")
+
+# IP 出站类型过滤(与 Web UI / 后端 routing_ip_type 口径一致)
+IP_TYPE_ORDER = ["all", "residential", "hosting"]
+IP_TYPE_LABELS = {
+    "all": "所有IP (机房 + 住宅)",
+    "residential": "住宅IP (静态家宽)",
+    "hosting": "机房IP (普通机房)",
+}
+
+def set_iptype(value=None):
+    yellow = "\033[1;33m"; green = "\033[1;32m"; reset = "\033[0m"
+    cfg = load_ui_auth()
+    current = cfg.get("routing_ip_type", "all")
+    if value is None:
+        print("=======================================================")
+        print("               IP 出站类型过滤")
+        print("=======================================================")
+        print(f"当前: {green}{IP_TYPE_LABELS.get(current, current)}{reset}")
+        for i, k in enumerate(IP_TYPE_ORDER, 1):
+            mark = " (当前)" if k == current else ""
+            print(f"  [{i}] {IP_TYPE_LABELS[k]}{mark}")
+        print("=======================================================")
+        try:
+            value = input("请输入要切换到的【序号 1-3】或类型名(直接回车取消): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消。")
+            return
+        if not value:
+            print("已取消。")
+            return
+    value = str(value).strip().lower()
+    if value in ("1", "2", "3"):
+        value = IP_TYPE_ORDER[int(value) - 1]
+    if value not in IP_TYPE_LABELS:
+        print(f"无效的类型: {value}。可选: all / residential / hosting (或序号 1/2/3)。")
+        return
+    if value == current:
+        print(f"当前已是【{IP_TYPE_LABELS[value]}】,无需切换。")
+        return
+    cfg["routing_ip_type"] = value
+    try:
+        save_ui_auth(cfg)
+    except Exception as e:
+        print(f"写入配置失败: {e}")
+        return
+    print(f"IP 出站类型过滤已切换为: {IP_TYPE_LABELS[value]}")
+    print(f"{yellow}说明: 该过滤在自动选节点时生效;固定节点(ml fix)不受影响。{reset}")
+    restart_service()
+    print("配置已生效,服务正在重启并按新过滤重新选择节点。可运行 'ml current' 查看状态。")
 
 def ping_ip(ip):
     if not ip:
@@ -1135,8 +1186,10 @@ def main():
             auto_mode()
         elif cmd == "switch":
             switch_node()
+        elif cmd == "iptype":
+            set_iptype(sys.argv[2] if len(sys.argv) > 2 else None)
         else:
-            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password, nodes, refresh, current, fix, auto, switch")
+            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password, nodes, refresh, current, fix, auto, switch, iptype")
         sys.exit(0)
         
     options = {
@@ -1154,12 +1207,13 @@ def main():
         'c': ("当前节点状态 (ml current)", show_current),
         'f': ("固定节点 (ml fix)", fix_node),
         's': ("切换到最佳节点 (ml switch)", switch_node),
+        't': ("IP出站类型过滤 (ml iptype)", set_iptype),
         'a': ("自动切换模式 (ml auto)", auto_mode),
         '0': ("退出终端", None)
     }
     # 菜单分组显示顺序(服务管理 / 节点管理)
     service_keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
-    node_keys = ['n', 'r', 'c', 'f', 's', 'a']
+    node_keys = ['n', 'r', 'c', 'f', 's', 't', 'a']
     
     # Enter alternate buffer and hide cursor
     print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
@@ -1186,7 +1240,7 @@ def main():
                 print_line(f"  {green}[0]{reset} {options['0'][0]}")
                 print_line("=======================================================")
                 print_line("提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态。")
-                print("请直接输入数字键 [0-9] 或字母键 [n/r/c/f/s/a] 快速选择执行：\033[K", end="", flush=True)
+                print("请直接输入数字键 [0-9] 或字母键 [n/r/c/f/s/t/a] 快速选择执行：\033[K", end="", flush=True)
                 print("\033[J", end="", flush=True)
                 need_redraw = False
                 
@@ -1464,6 +1518,7 @@ echo -e "  * 重新拉取节点:   ${YELLOW}ml refresh${PLAIN}"
 echo -e "  * 当前节点状态:   ${YELLOW}ml current${PLAIN}"
 echo -e "  * 固定某个节点:   ${YELLOW}ml fix <序号|ID>${PLAIN}"
 echo -e "  * 切换到最佳节点: ${YELLOW}ml switch${PLAIN}"
+echo -e "  * IP出站类型过滤: ${YELLOW}ml iptype <all|residential|hosting>${PLAIN}"
 echo -e "  * 恢复自动切换:   ${YELLOW}ml auto${PLAIN}"
 echo -e "=========================================================="
 echo
