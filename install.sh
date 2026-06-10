@@ -313,7 +313,7 @@ def _probe_label(n):
 def _iptype_text(n):
     # 出站类型纯文本(用于表格对齐),与后端 ip_type 取值对应
     t = (n.get("ip_type") or "").strip()
-    return {"residential": "住宅", "mobile": "住宅(移动)", "hosting": "机房"}.get(t, "未知")
+    return {"residential": "住宅IP", "mobile": "住宅IP(移动)", "hosting": "机房IP"}.get(t, "未知")
 
 def load_ui_auth():
     import json
@@ -345,7 +345,7 @@ def list_nodes(return_only=False):
         print(f"               {bold}AimiliVPN 节点列表 (共 {len(nodes)} 个){reset}")
         print("=======================================================================")
         header = f"{'序号':<4}{'国家':<10}{'入口 IP:端口':<26}{'延迟':<10}"
-        header_iptype = "出站类型" + " " * max(0, 12 - get_display_width("出站类型"))
+        header_iptype = "出站类型" + " " * max(0, 14 - get_display_width("出站类型"))
         print(f"{bold}{header}{header_iptype}{'状态'}{reset}")
         print(f"{dim}-------------------------------------------------------------------------------{reset}")
         for i, n in enumerate(nodes, 1):
@@ -358,7 +358,7 @@ def list_nodes(return_only=False):
             # 用 get_display_width 对齐含中文的国家列与出站类型列
             country_pad = country + " " * max(0, 10 - get_display_width(country))
             iptype = _iptype_text(n)
-            iptype_pad = iptype + " " * max(0, 12 - get_display_width(iptype))
+            iptype_pad = iptype + " " * max(0, 14 - get_display_width(iptype))
             print(f"{i:<4}{country_pad}{endpoint:<26}{lat_str:<10}{iptype_pad}{_probe_label(n)}")
         print("=======================================================================")
         print(f"{dim}提示: 'ml fix <序号>' 固定节点; 'ml auto' 恢复自动切换; 'ml refresh' 重新拉取{reset}")
