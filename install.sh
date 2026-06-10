@@ -624,6 +624,46 @@ def get_public_ip():
             pass
     return "您的服务器公网IP"
 
+def _local_proxy_curl_target(proxy_port):
+    # 与后端 check_proxy_health 一致:解析本地代理可连接地址
+    host = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
+    if host in ("::", "0.0.0.0", ""):
+        return "127.0.0.1"
+    if ":" in host:
+        return f"[{host}]"
+    return host
+
+def query_exit_info(proxy_port, timeout=8):
+    # 经本地 SOCKS5 代理访问 ippure,查询出口 IP 的真实归属信息
+    import json, subprocess
+    host = _local_proxy_curl_target(proxy_port)
+    proxy_url = f"socks5h://{host}:{proxy_port}"
+    cmd = ["curl", "-s", "-x", proxy_url, "https://my.ippure.com/v1/info", "--max-time", str(timeout)]
+    # 本地代理若启用了认证,附带凭据(默认无)
+    user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
+    pwd = os.environ.get("LOCAL_PROXY_PASS") or os.environ.get("LOCAL_PROXY_PASSWORD")
+    if user is not None and pwd is not None:
+        cmd.extend(["--proxy-user", f"{user}:{pwd}"])
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 2)
+        if res.returncode != 0 or not res.stdout.strip():
+            return None
+        data = json.loads(res.stdout.strip())
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+def _fraud_label(score):
+    try:
+        s = int(score)
+    except Exception:
+        return ""
+    if s <= 30:
+        return f"{s} [良好]"
+    if s <= 60:
+        return f"{s} [一般]"
+    return f"{s} [较高风险]"
+
 def check_port_listening(port):
     for host, family in [("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)]:
         try:
@@ -690,13 +730,14 @@ def format_line(label, value, target_width=26):
 def print_line(text=""):
     print(f"{text}\033[K")
 
-def print_status():
+def print_status(with_exit_info=False):
     cfg = load_ui_cfg()
     ui_port = cfg.get("port", 8787)
     secret_path = cfg.get("secret_path", "EJsW2EeBo9lY")
     proxy_port = cfg.get("proxy_port", 7928)
     state = load_state()
     is_connecting = state.get("is_connecting", False)
+    routing_ip_type = load_ui_auth().get("routing_ip_type", "all")
     
     gateway_ok = check_port_listening(proxy_port)
     service_ok = check_service_active("aimilivpn.service")
@@ -752,12 +793,32 @@ def print_status():
         proxy_ip = state.get("proxy_ip", "-")
         proxy_latency = state.get("proxy_latency_ms", 0)
         proxy_ok = state.get("proxy_ok", False)
-        
+
+        ip_type_disp = {"all": "所有IP (all)", "residential": "住宅IP (residential)", "hosting": "机房IP (hosting)"}.get(routing_ip_type, routing_ip_type)
+        print_line(format_line("IP 出站类型", ip_type_disp))
         print_line(format_line("节点 IP (入口)", active_ip))
         print_line(format_line("节点地区", active_loc))
         print_line(format_line("节点延迟 (直连测试)", latency))
         if proxy_ok and proxy_ip and proxy_ip != "-":
             print_line(format_line("出口 IP (出站)", proxy_ip))
+            # 出口归属详情:仅 ml status 页面经本地代理实时查询 ippure
+            if with_exit_info:
+                info = query_exit_info(proxy_port)
+                if info:
+                    asn = info.get("asn")
+                    org = info.get("asOrganization") or ""
+                    asn_str = f"AS{asn} {org}".strip() if asn else (org or "-")
+                    print_line(format_line("出口归属 (ASN)", asn_str))
+                    print_line(format_line("出口国家", info.get("country") or "-"))
+                    is_res = info.get("isResidential")
+                    ip_kind = "住宅IP" if is_res else "机房IP"
+                    broadcast = "是" if info.get("isBroadcast") else "否"
+                    print_line(format_line("IP 类型", f"{ip_kind} · 广播: {broadcast}"))
+                    fl = _fraud_label(info.get("fraudScore"))
+                    if fl:
+                        print_line(format_line("欺诈评分", fl))
+                else:
+                    print_line(format_line("出口归属 (ASN)", f"{yellow}[查询失败/超时]{reset}"))
             print_line(format_line("本地代理延迟", f"{proxy_latency} ms" if proxy_latency else "检测中..."))
         else:
             proxy_err = state.get("proxy_error") or "检测中/未就绪"
@@ -1157,8 +1218,9 @@ def main():
             print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
             try:
                 while True:
-                    print("\033[H", end="")
-                    print_status()
+                    print("\033[H\033[J", end="")
+                    print("\033[1;33m正在查询出口 IP 归属信息(经本地代理)...\033[0m", flush=True)
+                    print_status(with_exit_info=True)
                     print_line("\n\033[1;33m提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态，按 [q] 或 [Ctrl+C] 退出...\033[0m")
                     print("\033[J", end="", flush=True)
                     
