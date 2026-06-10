@@ -104,7 +104,9 @@ def bounded_int(value: Any, default: int, min_value: int | None = None, max_valu
         return default
     return parsed
 
-API_URL = "https://www.vpngate.net/api/iphone/"
+# 通过 proxy.vlato.site 反代拉取官方 API,规避 www.vpngate.net 被 DNS 污染/封锁的问题
+# 反代格式: /proxy/{目标URL},返回内容与官方 API 完全一致
+API_URL = "https://proxy.vlato.site/proxy/https://www.vpngate.net/api/iphone/"
 FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 1260, 1)
 CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 1260, 1)
 TARGET_VALID_NODES = env_int("TARGET_VALID_NODES", 3, 1)
@@ -750,7 +752,8 @@ def fetch_candidates() -> list[dict[str, Any]]:
         (API_URL, False)
     ]
     if API_URL.startswith("https://"):
-        attempts_targets.append((API_URL.replace("https://", "http://"), True))
+        # 仅降级外层协议(反代地址),内层目标 URL 的 https:// 保持不变,故限制只替换一次
+        attempts_targets.append((API_URL.replace("https://", "http://", 1), True))
         
     log_to_json("INFO", "Main", "开始拉取官方 API 节点列表...")
     
