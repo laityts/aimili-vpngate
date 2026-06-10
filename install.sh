@@ -264,6 +264,256 @@ def get_active_node_info():
             pass
     return None, None
 
+# ============ 节点管理子命令(nodes / refresh / current / fix / auto) ============
+
+NODES_PATH = "/opt/aimilivpn/vpngate_data/nodes.json"
+UI_AUTH_PATH = "/opt/aimilivpn/vpngate_data/ui_auth.json"
+
+def load_nodes():
+    import json
+    if not os.path.exists(NODES_PATH):
+        return []
+    try:
+        with open(NODES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def _node_latency(n):
+    # 延迟用于排序:无效/未检测的排到最后
+    try:
+        v = int(n.get("latency_ms") or 0)
+    except Exception:
+        v = 0
+    return v if v > 0 else 999999
+
+def sorted_nodes():
+    # 活动节点优先,其次按延迟升序、评分降序;与后端 auto_switch_node 排序口径一致
+    nodes = load_nodes()
+    def key(n):
+        try:
+            score = int(n.get("score") or 0)
+        except Exception:
+            score = 0
+        return (0 if n.get("active") else 1, _node_latency(n), -score)
+    return sorted(nodes, key=key)
+
+def _probe_label(n):
+    green = "\033[1;32m"; red = "\033[1;31m"; yellow = "\033[1;33m"; reset = "\033[0m"
+    st = n.get("probe_status", "not_checked")
+    if n.get("active"):
+        return f"{green}● 使用中{reset}"
+    if st == "available":
+        return f"{green}可用{reset}"
+    if st == "unavailable":
+        return f"{red}不可用{reset}"
+    return f"{yellow}未检测{reset}"
+
+def load_ui_auth():
+    import json
+    cfg = {}
+    if os.path.exists(UI_AUTH_PATH):
+        try:
+            with open(UI_AUTH_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+    return cfg if isinstance(cfg, dict) else {}
+
+def save_ui_auth(cfg):
+    import json
+    os.makedirs(os.path.dirname(UI_AUTH_PATH), exist_ok=True)
+    tmp = UI_AUTH_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, UI_AUTH_PATH)
+
+def list_nodes(return_only=False):
+    nodes = sorted_nodes()
+    if not return_only:
+        yellow = "\033[1;33m"; bold = "\033[1m"; reset = "\033[0m"; dim = "\033[2m"
+        if not nodes:
+            print("当前无节点缓存。请先运行 'ml refresh' 拉取节点，或确认服务已正常启动。")
+            return nodes
+        print("=======================================================================")
+        print(f"               {bold}AimiliVPN 节点列表 (共 {len(nodes)} 个){reset}")
+        print("=======================================================================")
+        print(f"{bold}{'序号':<4}{'国家':<10}{'入口 IP:端口':<26}{'延迟':<10}{'状态'}{reset}")
+        print(f"{dim}-----------------------------------------------------------------------{reset}")
+        for i, n in enumerate(nodes, 1):
+            country = n.get("country") or n.get("country_short") or "未知"
+            ip = n.get("ip") or n.get("remote_host") or "-"
+            port = n.get("remote_port") or ""
+            endpoint = f"{ip}:{port}" if port else ip
+            lat = _node_latency(n)
+            lat_str = f"{lat} ms" if lat < 999999 else "-"
+            # 用 get_display_width 对齐含中文的国家列
+            country_pad = country + " " * max(0, 10 - get_display_width(country))
+            print(f"{i:<4}{country_pad}{endpoint:<26}{lat_str:<10}{_probe_label(n)}")
+        print("=======================================================================")
+        print(f"{dim}提示: 'ml fix <序号>' 固定节点; 'ml auto' 恢复自动切换; 'ml refresh' 重新拉取{reset}")
+    return nodes
+
+def refresh_nodes():
+    # 通过重启服务触发后端维护线程立即重新拉取并检测节点
+    print("正在触发节点重新拉取(将重启服务以让后端立即执行拉取与检测)...", flush=True)
+    restart_service()
+    print("已触发。后端正在后台异步拉取最新节点并逐一检测可用性，")
+    print("通常需要数十秒至一两分钟。可稍后运行 'ml nodes' 查看最新列表，或 'ml current' 查看连接状态。")
+
+def show_current():
+    yellow = "\033[1;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"
+    state = load_state()
+    cfg = load_ui_auth()
+    mode_map = {"auto": "自动选优 (可用性失效自动切换)", "fixed_ip": "固定节点", "fixed_region": "固定地区", "favorites": "收藏优先"}
+    routing_mode = cfg.get("routing_mode", "auto")
+    connection_enabled = cfg.get("connection_enabled", True)
+    active_ip, active_loc = get_active_node_info()
+    active_id = state.get("active_openvpn_node_id") or ""
+    is_connecting = state.get("is_connecting", False)
+
+    print("=======================================================")
+    print(f"               {bold}当前节点状态{reset}")
+    print("=======================================================")
+    print(format_line("连接总开关", f"{green}已启用{reset}" if connection_enabled else f"{red}已禁用{reset}"))
+    print(format_line("路由模式", mode_map.get(routing_mode, routing_mode)))
+    if routing_mode == "fixed_ip":
+        print(format_line("固定节点 ID", cfg.get("fixed_node_id") or "(未指定)"))
+    print("-------------------------------------------------------")
+    if is_connecting:
+        msg = state.get("last_check_message") or "正在建立连接..."
+        print(format_line("节点状态", f"{yellow}{msg}{reset}"))
+    elif active_ip:
+        print(format_line("活动节点 ID", active_id))
+        print(format_line("入口 IP", active_ip))
+        print(format_line("节点地区", active_loc or "未知"))
+        latency = state.get("active_node_latency", "-")
+        print(format_line("节点延迟", str(latency)))
+        proxy_ok = state.get("proxy_ok", False)
+        proxy_ip = state.get("proxy_ip", "-")
+        if proxy_ok and proxy_ip and proxy_ip != "-":
+            print(format_line("出口 IP (出站)", proxy_ip))
+            pl = state.get("proxy_latency_ms", 0)
+            print(format_line("本地代理延迟", f"{pl} ms" if pl else "检测中..."))
+        else:
+            perr = state.get("proxy_error") or "检测中/未就绪"
+            print(format_line("出口 IP (出站)", f"{red}[不可用 - {perr}]{reset}"))
+    else:
+        print(format_line("节点状态", "无活动连接"))
+    print("=======================================================")
+
+def _resolve_node(selector):
+    # selector 可为列表序号(1-based,基于 sorted_nodes)或节点 ID,返回匹配节点或 None
+    nodes = sorted_nodes()
+    sel = str(selector).strip()
+    if sel.isdigit():
+        idx = int(sel)
+        if 1 <= idx <= len(nodes):
+            return nodes[idx - 1]
+        return None
+    for n in nodes:
+        if n.get("id") == sel:
+            return n
+    return None
+
+def fix_node(selector=None):
+    nodes = sorted_nodes()
+    if not nodes:
+        print("当前无节点缓存，无法固定。请先运行 'ml refresh' 拉取节点。")
+        return
+    if selector is None:
+        list_nodes()
+        try:
+            selector = input("\n请输入要固定的节点【序号】或【节点 ID】(直接回车取消): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消。")
+            return
+        if not selector:
+            print("已取消。")
+            return
+    node = _resolve_node(selector)
+    if not node:
+        print(f"未找到匹配的节点: {selector}。请用 'ml nodes' 查看有效序号/ID。")
+        return
+    cfg = load_ui_auth()
+    cfg["routing_mode"] = "fixed_ip"
+    cfg["fixed_node_id"] = node["id"]
+    cfg["connection_enabled"] = True
+    try:
+        save_ui_auth(cfg)
+    except Exception as e:
+        print(f"写入配置失败: {e}")
+        return
+    country = node.get("country") or node.get("country_short") or "未知"
+    ip = node.get("ip") or node.get("remote_host") or "-"
+    print(f"已设置为固定节点模式 -> {country} ({ip}) [ID: {node['id']}]")
+    restart_service()
+    print("配置已生效，服务正在重启并连接该固定节点。可运行 'ml current' 查看状态。")
+
+def auto_mode():
+    cfg = load_ui_auth()
+    prev = cfg.get("routing_mode", "auto")
+    cfg["routing_mode"] = "auto"
+    cfg["connection_enabled"] = True
+    try:
+        save_ui_auth(cfg)
+    except Exception as e:
+        print(f"写入配置失败: {e}")
+        return
+    print(f"已切换到自动选优模式(原模式: {prev})。")
+    print("后端将自动选择延迟最低的可用节点，当前节点不可用时会自动切换到最佳备用节点。")
+    restart_service()
+    print("配置已生效，服务正在重启。可运行 'ml current' 查看状态。")
+
+def best_node():
+    # 最佳节点:仅取可用节点,按延迟升序、评分降序(与后端 auto_switch_node 口径一致)
+    avail = [n for n in load_nodes() if n.get("probe_status") == "available"]
+    if not avail:
+        return None
+    def key(n):
+        try:
+            score = int(n.get("score") or 0)
+        except Exception:
+            score = 0
+        return (_node_latency(n), -score)
+    return sorted(avail, key=key)[0]
+
+def switch_node():
+    yellow = "\033[1;33m"; green = "\033[1;32m"; reset = "\033[0m"
+    best = best_node()
+    if not best:
+        print("当前没有【已检测为可用】的节点,无法切换。")
+        print("请先运行 'ml refresh' 重新拉取并检测节点,稍候再试。")
+        return
+    country = best.get("country") or best.get("country_short") or "未知"
+    ip = best.get("ip") or best.get("remote_host") or "-"
+    lat = _node_latency(best)
+    lat_str = f"{lat} ms" if lat < 999999 else "未知"
+    print(f"当前最佳可用节点: {green}{country} ({ip}){reset}  延迟 {lat_str}  [ID: {best['id']}]")
+
+    state = load_state()
+    active_id = state.get("active_openvpn_node_id") or ""
+    cfg = load_ui_auth()
+    if (active_id == best["id"] and not state.get("is_connecting", False)
+            and cfg.get("routing_mode") == "fixed_ip"
+            and cfg.get("fixed_node_id") == best["id"]):
+        print(f"{yellow}当前已固定并连接到该最佳节点,无需切换。{reset}")
+        return
+
+    cfg["routing_mode"] = "fixed_ip"
+    cfg["fixed_node_id"] = best["id"]
+    cfg["connection_enabled"] = True
+    try:
+        save_ui_auth(cfg)
+    except Exception as e:
+        print(f"写入配置失败: {e}")
+        return
+    print("正在切换到该最佳节点...")
+    restart_service()
+    print("配置已生效,服务正在重启并连接最佳节点。可运行 'ml current' 查看状态。")
+    print(f"{yellow}提示: 此操作会固定到该节点;若希望后续自动跟随最佳节点变化,可运行 'ml auto'。{reset}")
+
 def ping_ip(ip):
     if not ip:
         return None
@@ -873,8 +1123,20 @@ def main():
             configure_port()
         elif cmd == "password":
             configure_credentials()
+        elif cmd == "nodes":
+            list_nodes()
+        elif cmd == "refresh":
+            refresh_nodes()
+        elif cmd == "current":
+            show_current()
+        elif cmd == "fix":
+            fix_node(sys.argv[2] if len(sys.argv) > 2 else None)
+        elif cmd == "auto":
+            auto_mode()
+        elif cmd == "switch":
+            switch_node()
         else:
-            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password")
+            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password, nodes, refresh, current, fix, auto, switch")
         sys.exit(0)
         
     options = {
@@ -887,8 +1149,17 @@ def main():
         '7': ("账号密码 (ml password)", configure_credentials),
         '8': ("一键更新 (ml update)", update_service),
         '9': ("完全卸载 (ml uninstall)", uninstall_service),
+        'n': ("节点列表 (ml nodes)", list_nodes),
+        'r': ("重新拉取节点 (ml refresh)", refresh_nodes),
+        'c': ("当前节点状态 (ml current)", show_current),
+        'f': ("固定节点 (ml fix)", fix_node),
+        's': ("切换到最佳节点 (ml switch)", switch_node),
+        'a': ("自动切换模式 (ml auto)", auto_mode),
         '0': ("退出终端", None)
     }
+    # 菜单分组显示顺序(服务管理 / 节点管理)
+    service_keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+    node_keys = ['n', 'r', 'c', 'f', 's', 'a']
     
     # Enter alternate buffer and hide cursor
     print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
@@ -904,15 +1175,18 @@ def main():
                 green = "\033[1;32m"
                 
                 print_line(f"【{bold}终端指令菜单栏{reset}】")
-                for key in sorted(options.keys()):
-                    if key == '0':
-                        continue
+                print_line(f"  {bold}— 服务管理 —{reset}")
+                for key in service_keys:
+                    name, _ = options[key]
+                    print_line(f"  {green}[{key}]{reset} {name}")
+                print_line(f"  {bold}— 节点管理 —{reset}")
+                for key in node_keys:
                     name, _ = options[key]
                     print_line(f"  {green}[{key}]{reset} {name}")
                 print_line(f"  {green}[0]{reset} {options['0'][0]}")
                 print_line("=======================================================")
                 print_line("提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态。")
-                print("请直接输入数字键 [0-9] 快速选择执行：\033[K", end="", flush=True)
+                print("请直接输入数字键 [0-9] 或字母键 [n/r/c/f/s/a] 快速选择执行：\033[K", end="", flush=True)
                 print("\033[J", end="", flush=True)
                 need_redraw = False
                 
@@ -930,7 +1204,11 @@ def main():
             if key in ('\r', '\n', '\x0a', '\x0d'):
                 need_redraw = True
                 continue
-                
+
+            # 字母键归一化为小写,便于匹配 n/r/c/f/a(不影响转义序列与控制字符)
+            if len(key) == 1 and key.isalpha():
+                key = key.lower()
+
             if key in options:
                 name, func = options[key]
                 if func is None:
@@ -1180,5 +1458,12 @@ echo -e "  * 快速状态指令:   ${YELLOW}ml status${PLAIN}  或  ${YELLOW}ml$
 echo -e "  * 查看实时日志:   ${YELLOW}ml logs${PLAIN}"
 echo -e "  * 停止服务:       ${YELLOW}ml stop${PLAIN}"
 echo -e "  * 重启服务:       ${YELLOW}ml restart${PLAIN}"
+echo -e " --------------------------------------------------------"
+echo -e "  * 节点列表:       ${YELLOW}ml nodes${PLAIN}"
+echo -e "  * 重新拉取节点:   ${YELLOW}ml refresh${PLAIN}"
+echo -e "  * 当前节点状态:   ${YELLOW}ml current${PLAIN}"
+echo -e "  * 固定某个节点:   ${YELLOW}ml fix <序号|ID>${PLAIN}"
+echo -e "  * 切换到最佳节点: ${YELLOW}ml switch${PLAIN}"
+echo -e "  * 恢复自动切换:   ${YELLOW}ml auto${PLAIN}"
 echo -e "=========================================================="
 echo
