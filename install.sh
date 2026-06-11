@@ -721,14 +721,25 @@ def get_display_width(s):
             width += 1
     return width
 
-def format_line(label, value, target_width=26):
+def format_line(label, value, target_width=26, label_color=""):
     prefix = "  ● "
     w = get_display_width(label)
     padding = " " * max(0, target_width - w)
+    if label_color:
+        return f"{prefix}{label_color}{label}\033[0m{padding}:  {value}"
     return f"{prefix}{label}{padding}:  {value}"
 
 def print_line(text=""):
     print(f"{text}\033[K")
+
+def _latency_color(val, green, yellow, red, reset):
+    import re
+    m = re.match(r'^\s*(\d+)', str(val))
+    if not m:
+        return val
+    n = int(m.group(1))
+    c = green if n <= 150 else (yellow if n <= 400 else red)
+    return f"{c}{val}{reset}"
 
 def print_status(with_exit_info=False):
     cfg = load_ui_cfg()
@@ -752,23 +763,25 @@ def print_status(with_exit_info=False):
     reset = "\033[0m"
     bold = "\033[1m"
     yellow = "\033[1;33m"
-    
-    backend_status = f"{green}[已激活] (PID: {pid}){reset}" if (service_ok and pid) else f"{red}[未启动]{reset}"
-    
+    cyan = "\033[1;36m"
+    sep = f"{cyan}======================================================={reset}"
+
+    backend_status = f"{green}[✓ 已激活] (PID: {pid}){reset}" if (service_ok and pid) else f"{red}[✗ 未启动]{reset}"
+
     if is_connecting:
-        gateway_status = f"{yellow}[切换中...]{reset}"
-        openvpn_status = f"{yellow}[{state.get('active_node_latency') or '连接中'}...]{reset}"
+        gateway_status = f"{yellow}[! 切换中...]{reset}"
+        openvpn_status = f"{yellow}[! {state.get('active_node_latency') or '连接中'}...]{reset}"
     else:
-        gateway_status = f"{green}[已激活]{reset}" if gateway_ok else f"{red}[未启动]{reset}"
-        openvpn_status = f"{green}[已连接]{reset}" if openvpn_ok else f"{red}[未连接]{reset}"
-    
-    print_line("=======================================================")
-    print_line(f"               {bold}AimiliVPN 管理终端 v2.0{reset}                  ")
-    print_line("=======================================================")
-    print_line("【核心服务状态】")
-    print_line(format_line(f"代理网关 (Port {proxy_port})", gateway_status))
-    print_line(format_line(f"管理后台 (Port {ui_port})", backend_status))
-    print_line(format_line("连接核心 (OpenVPN)", openvpn_status))
+        gateway_status = f"{green}[✓ 已激活]{reset}" if gateway_ok else f"{red}[✗ 未启动]{reset}"
+        openvpn_status = f"{green}[✓ 已连接]{reset}" if openvpn_ok else f"{red}[✗ 未连接]{reset}"
+
+    print_line(sep)
+    print_line(f"               {cyan}AimiliVPN 管理终端 v2.0{reset}                  ")
+    print_line(sep)
+    print_line(f"{cyan}【核心服务状态】{reset}")
+    print_line(format_line(f"代理网关 (Port {proxy_port})", gateway_status, label_color=cyan))
+    print_line(format_line(f"管理后台 (Port {ui_port})", backend_status, label_color=cyan))
+    print_line(format_line("连接核心 (OpenVPN)", openvpn_status, label_color=cyan))
     
     host_cfg = cfg.get("host", "::")
     if host_cfg in ("127.0.0.1", "localhost"):
@@ -779,28 +792,30 @@ def print_status(with_exit_info=False):
         login_ip = get_public_ip()
     else:
         login_ip = f"[{host_cfg}]" if ":" in host_cfg else host_cfg
-    print_line(format_line("网页登录地址", f"{yellow}http://{login_ip}:{ui_port}/{secret_path}/{reset}"))
-    print_line(format_line("网页管理账号", cfg.get("username", "未配置")))
+    print_line(format_line("网页登录地址", f"{yellow}http://{login_ip}:{ui_port}/{secret_path}/{reset}", label_color=cyan))
+    print_line(format_line("网页管理账号", f"{bold}{cfg.get('username', '未配置')}{reset}", label_color=cyan))
     curr_pwd = cfg.get("password", "")
     masked_pwd = curr_pwd if len(curr_pwd) <= 4 else curr_pwd[:3] + "********" + curr_pwd[-2:]
-    print_line(format_line("网页管理密码", masked_pwd))
+    print_line(format_line("网页管理密码", masked_pwd, label_color=cyan))
     print_line()
-    print_line("【活动节点状态】")
+    print_line(f"{cyan}【活动节点状态】{reset}")
     if is_connecting:
         connecting_msg = state.get('last_check_message') or '正在建立加密隧道并验证路由规则...'
-        print_line(format_line("节点状态", f"{yellow}{connecting_msg}{reset}"))
+        print_line(format_line("节点状态", f"{yellow}{connecting_msg}{reset}", label_color=cyan))
     elif active_ip:
         proxy_ip = state.get("proxy_ip", "-")
         proxy_latency = state.get("proxy_latency_ms", 0)
         proxy_ok = state.get("proxy_ok", False)
 
         ip_type_disp = {"all": "所有IP (all)", "residential": "住宅IP (residential)", "hosting": "机房IP (hosting)"}.get(routing_ip_type, routing_ip_type)
-        print_line(format_line("IP 出站类型", ip_type_disp))
-        print_line(format_line("节点 IP (入口)", active_ip))
-        print_line(format_line("节点地区", active_loc))
-        print_line(format_line("节点延迟 (直连测试)", latency))
+        outtype_color = green if routing_ip_type == "residential" else (yellow if routing_ip_type == "hosting" else "")
+        ip_type_val = f"{outtype_color}{ip_type_disp}{reset}" if outtype_color else ip_type_disp
+        print_line(format_line("IP 出站类型", ip_type_val, label_color=cyan))
+        print_line(format_line("节点 IP (入口)", f"{bold}{active_ip}{reset}", label_color=cyan))
+        print_line(format_line("节点地区", active_loc, label_color=cyan))
+        print_line(format_line("节点延迟 (直连测试)", _latency_color(latency, green, yellow, red, reset), label_color=cyan))
         if proxy_ok and proxy_ip and proxy_ip != "-":
-            print_line(format_line("出口 IP (出站)", proxy_ip))
+            print_line(format_line("出口 IP (出站)", f"{bold}{proxy_ip}{reset}", label_color=cyan))
             # 出口归属详情:仅 ml status 页面经本地代理实时查询 ippure
             if with_exit_info:
                 info = query_exit_info(proxy_port)
@@ -808,23 +823,30 @@ def print_status(with_exit_info=False):
                     asn = info.get("asn")
                     org = info.get("asOrganization") or ""
                     asn_str = f"AS{asn} {org}".strip() if asn else (org or "-")
-                    print_line(format_line("出口归属 (ASN)", asn_str))
-                    print_line(format_line("出口国家", info.get("country") or "-"))
+                    print_line(format_line("出口归属 (ASN)", asn_str, label_color=cyan))
+                    print_line(format_line("出口国家", info.get("country") or "-", label_color=cyan))
                     is_res = info.get("isResidential")
                     ip_kind = "住宅IP" if is_res else "机房IP"
+                    kind_color = green if is_res else yellow
                     broadcast = "是" if info.get("isBroadcast") else "否"
-                    print_line(format_line("IP 类型", f"{ip_kind} · 广播: {broadcast}"))
-                    fl = _fraud_label(info.get("fraudScore"))
-                    if fl:
-                        print_line(format_line("欺诈评分", fl))
+                    print_line(format_line("IP 类型", f"{kind_color}{ip_kind}{reset} · 广播: {broadcast}", label_color=cyan))
+                    fraud = _fraud_label(info.get("fraudScore"))
+                    if fraud:
+                        if "[良好]" in fraud:
+                            fc, fs = green, "✓"
+                        elif "[一般]" in fraud:
+                            fc, fs = yellow, "!"
+                        else:
+                            fc, fs = red, "✗"
+                        print_line(format_line("欺诈评分", f"{fc}{fs} {fraud}{reset}", label_color=cyan))
                 else:
-                    print_line(format_line("出口归属 (ASN)", f"{yellow}[查询失败/超时]{reset}"))
-            print_line(format_line("本地代理延迟", f"{proxy_latency} ms" if proxy_latency else "检测中..."))
+                    print_line(format_line("出口归属 (ASN)", f"{yellow}[! 查询失败/超时]{reset}", label_color=cyan))
+            print_line(format_line("本地代理延迟", _latency_color(f"{proxy_latency} ms" if proxy_latency else "检测中...", green, yellow, red, reset), label_color=cyan))
         else:
             proxy_err = state.get("proxy_error") or "检测中/未就绪"
-            print_line(format_line("出口 IP (出站)", f"{red}[不可用 - {proxy_err}]{reset}"))
+            print_line(format_line("出口 IP (出站)", f"{red}[✗ 不可用 - {proxy_err}]{reset}", label_color=cyan))
     else:
-        print_line(format_line("节点状态", "无活动连接"))
+        print_line(format_line("节点状态", "无活动连接", label_color=cyan))
     print_line()
     local_proxy = state.get("local_proxy", f"http://127.0.0.1:{proxy_port}")
     import urllib.parse
@@ -843,11 +865,11 @@ def print_status(with_exit_info=False):
     else:
         proxy_addr = proxy_host
 
-    print_line("【使用方法】")
-    print_line(f"  export http_proxy=http://{proxy_addr}:{proxy_port}")
-    print_line(f"  export https_proxy=http://{proxy_addr}:{proxy_port}")
+    print_line(f"{cyan}【使用方法】{reset}")
+    print_line(f"  {bold}export http_proxy=http://{proxy_addr}:{proxy_port}{reset}")
+    print_line(f"  {bold}export https_proxy=http://{proxy_addr}:{proxy_port}{reset}")
     print_line(f"  # 也可用于 SOCKS5: socks5://{proxy_addr}:{proxy_port}")
-    print_line("=======================================================")
+    print_line(sep)
 
 def run_service_cmd(cmd):
     if shutil.which("systemctl"):
