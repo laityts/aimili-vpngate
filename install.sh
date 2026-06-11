@@ -372,7 +372,7 @@ def refresh_nodes():
     print("通常需要数十秒至一两分钟。可稍后运行 'ml nodes' 查看最新列表，或 'ml current' 查看连接状态。")
 
 def show_current():
-    yellow = "\033[1;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"
+    yellow = "\033[1;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"; cyan = "\033[1;36m"
     state = load_state()
     cfg = load_ui_auth()
     mode_map = {"auto": "自动选优 (可用性失效自动切换)", "fixed_ip": "固定节点", "fixed_region": "固定地区", "favorites": "收藏优先"}
@@ -382,37 +382,40 @@ def show_current():
     active_id = state.get("active_openvpn_node_id") or ""
     is_connecting = state.get("is_connecting", False)
 
-    print("=======================================================")
-    print(f"               {bold}当前节点状态{reset}")
-    print("=======================================================")
-    print(format_line("连接总开关", f"{green}已启用{reset}" if connection_enabled else f"{red}已禁用{reset}"))
-    print(format_line("路由模式", mode_map.get(routing_mode, routing_mode)))
+    print(f"{cyan}======================================================={reset}")
+    print(f"               {cyan}当前节点状态{reset}")
+    print(f"{cyan}======================================================={reset}")
+    print(format_line("连接总开关", f"{green}[✓ 已启用]{reset}" if connection_enabled else f"{red}[✗ 已禁用]{reset}", label_color=cyan))
+    print(format_line("路由模式", mode_map.get(routing_mode, routing_mode), label_color=cyan))
     if routing_mode == "fixed_ip":
-        print(format_line("固定节点 ID", cfg.get("fixed_node_id") or "(未指定)"))
+        print(format_line("固定节点 ID", cfg.get("fixed_node_id") or "(未指定)", label_color=cyan))
     ip_type = cfg.get("routing_ip_type", "all")
-    print(format_line("IP出站类型过滤", IP_TYPE_LABELS.get(ip_type, ip_type)))
-    print("-------------------------------------------------------")
+    iptype_color = green if ip_type == "residential" else (yellow if ip_type == "hosting" else "")
+    iptype_disp = IP_TYPE_LABELS.get(ip_type, ip_type)
+    iptype_val = f"{iptype_color}{iptype_disp}{reset}" if iptype_color else iptype_disp
+    print(format_line("IP出站类型过滤", iptype_val, label_color=cyan))
+    print(f"{cyan}-------------------------------------------------------{reset}")
     if is_connecting:
         msg = state.get("last_check_message") or "正在建立连接..."
-        print(format_line("节点状态", f"{yellow}{msg}{reset}"))
+        print(format_line("节点状态", f"{yellow}{msg}{reset}", label_color=cyan))
     elif active_ip:
-        print(format_line("活动节点 ID", active_id))
-        print(format_line("入口 IP", active_ip))
-        print(format_line("节点地区", active_loc or "未知"))
+        print(format_line("活动节点 ID", active_id, label_color=cyan))
+        print(format_line("入口 IP", f"{bold}{active_ip}{reset}", label_color=cyan))
+        print(format_line("节点地区", active_loc or "未知", label_color=cyan))
         latency = state.get("active_node_latency", "-")
-        print(format_line("节点延迟", str(latency)))
+        print(format_line("节点延迟", _latency_color(str(latency), green, yellow, red, reset), label_color=cyan))
         proxy_ok = state.get("proxy_ok", False)
         proxy_ip = state.get("proxy_ip", "-")
         if proxy_ok and proxy_ip and proxy_ip != "-":
-            print(format_line("出口 IP (出站)", proxy_ip))
+            print(format_line("出口 IP (出站)", f"{bold}{proxy_ip}{reset}", label_color=cyan))
             pl = state.get("proxy_latency_ms", 0)
-            print(format_line("本地代理延迟", f"{pl} ms" if pl else "检测中..."))
+            print(format_line("本地代理延迟", _latency_color(f"{pl} ms" if pl else "检测中...", green, yellow, red, reset), label_color=cyan))
         else:
             perr = state.get("proxy_error") or "检测中/未就绪"
-            print(format_line("出口 IP (出站)", f"{red}[不可用 - {perr}]{reset}"))
+            print(format_line("出口 IP (出站)", f"{red}[✗ 不可用 - {perr}]{reset}", label_color=cyan))
     else:
-        print(format_line("节点状态", "无活动连接"))
-    print("=======================================================")
+        print(format_line("节点状态", "无活动连接", label_color=cyan))
+    print(f"{cyan}======================================================={reset}")
 
 def _resolve_node(selector):
     # selector 可为列表序号(1-based,基于 sorted_nodes)或节点 ID,返回匹配节点或 None
