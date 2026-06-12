@@ -510,23 +510,21 @@ def switch_node():
     active_id = state.get("active_openvpn_node_id") or ""
     cfg = load_ui_auth()
     if (active_id == best["id"] and not state.get("is_connecting", False)
-            and cfg.get("routing_mode") == "fixed_ip"
-            and cfg.get("fixed_node_id") == best["id"]):
-        print(f"{yellow}当前已固定并连接到该最佳节点,无需切换。{reset}")
+            and cfg.get("routing_mode") == "auto"):
+        print(f"{yellow}当前已连接到该最佳节点(自动模式),无需切换。{reset}")
         return
 
-    cfg["routing_mode"] = "fixed_ip"
-    cfg["fixed_node_id"] = best["id"]
+    cfg["routing_mode"] = "auto"
     cfg["connection_enabled"] = True
     try:
         save_ui_auth(cfg)
     except Exception as e:
         print(f"写入配置失败: {e}")
         return
-    print("正在切换到该最佳节点...")
+    print("正在切换到最佳可用节点...")
     restart_service()
-    print("配置已生效,服务正在重启并连接最佳节点。可运行 'ml current' 查看状态。")
-    print(f"{yellow}提示: 此操作会固定到该节点;若希望后续自动跟随最佳节点变化,可运行 'ml auto'。{reset}")
+    print("配置已生效,服务正在重启并连接最佳可用节点。可运行 'ml current' 查看状态。")
+    print(f"{yellow}提示: 已启用自动模式,当前节点失效时会自动切换到下一个可用节点;如需锁定单一节点请用 'ml fix'。{reset}")
 
 # IP 出站类型过滤(与 Web UI / 后端 routing_ip_type 口径一致)
 IP_TYPE_ORDER = ["all", "residential", "hosting"]
