@@ -329,7 +329,7 @@ def _iptype_text(n):
 def routing_mode_label(mode):
     # 路由模式语义化标签(ml status / ml current 共用,保证两处文案与配色一致)
     # auto/favorites 会自动选节点显示绿色;fixed_ip/fixed_region 为人工固定显示黄色(提示不会自动切换)
-    green = "\033[1;32m"; yellow = "\033[1;33m"; reset = "\033[0m"
+    green = "\033[1;32m"; yellow = "\033[0;33m"; reset = "\033[0m"
     labels = {
         "auto": "自动选优 (可用性失效自动切换)",
         "fixed_ip": "固定节点",
@@ -397,7 +397,7 @@ def refresh_nodes():
     print("通常需要数十秒至一两分钟。可稍后运行 'ml nodes' 查看最新列表，或 'ml current' 查看连接状态。")
 
 def show_current():
-    yellow = "\033[1;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"; cyan = "\033[1;36m"
+    yellow = "\033[0;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"; cyan = "\033[0;36m"
     state = load_state()
     cfg = load_ui_auth()
     routing_mode = cfg.get("routing_mode", "auto")
@@ -840,8 +840,8 @@ def print_status(with_exit_info=False):
     red = "\033[1;31m"
     reset = "\033[0m"
     bold = "\033[1m"
-    yellow = "\033[1;33m"
-    cyan = "\033[1;36m"
+    yellow = "\033[0;33m"
+    cyan = "\033[0;36m"
     sep = f"{cyan}======================================================={reset}"
 
     backend_status = f"{green}[✓ 已激活] (PID: {pid}){reset}" if (service_ok and pid) else f"{red}[✗ 未启动]{reset}"
@@ -1334,9 +1334,9 @@ def main():
             try:
                 while True:
                     print("\033[H\033[J", end="")
-                    print("\033[1;33m正在查询出口 IP 归属信息(经本地代理)...\033[0m", flush=True)
+                    print("\033[0;33m正在查询出口 IP 归属信息(经本地代理)...\033[0m", flush=True)
                     print_status(with_exit_info=True)
-                    print_line("\n\033[1;33m提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态，按 [q] 或 [Ctrl+C] 退出...\033[0m")
+                    print_line("\n\033[0;33m提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态，按 [q] 或 [Ctrl+C] 退出...\033[0m")
                     print("\033[J", end="", flush=True)
                     
                     key = getch()
