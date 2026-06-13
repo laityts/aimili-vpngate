@@ -1798,12 +1798,18 @@ def collector_loop() -> None:
         last_collector_heartbeat = time.time()
         success = False
         try:
-            print("[守护线程] 开始执行节点拉取与可用性检测周期任务...", flush=True)
-            log_to_json("INFO", "Main", "开始执行节点拉取与可用性检测周期任务...")
-            res = maintain_valid_nodes(force=False)
-            if "没有拉取到新节点" not in res:
-                success = True
-            log_to_json("INFO", "Main", f"周期同步与检测任务完成，结果: {res}")
+            # 已有正常运行的活动连接时,跳过周期性拉取与全量重测:当前已连上可用节点,
+            # 无需打扰;拉取仅在断开/无可用连接时进行(补齐/恢复)。连接失效由
+            # background_proxy_checker 检测并触发 auto_switch_node 按需处理。
+            if active_openvpn_running():
+                log_to_json("INFO", "Main", "已连接活动节点，跳过本轮周期拉取与重测。")
+            else:
+                print("[守护线程] 开始执行节点拉取与可用性检测周期任务...", flush=True)
+                log_to_json("INFO", "Main", "开始执行节点拉取与可用性检测周期任务...")
+                res = maintain_valid_nodes(force=False)
+                if "没有拉取到新节点" not in res:
+                    success = True
+                log_to_json("INFO", "Main", f"周期同步与检测任务完成，结果: {res}")
         except Exception as exc:
             err_msg = f"周期节点同步任务执行异常: {exc}"
             print(f"[错误] {err_msg}", flush=True)
