@@ -224,11 +224,22 @@ def save_ui_cfg(cfg):
     path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        # 原子写:先写临时文件再 os.replace,避免与后端并发截断写产生半截 JSON
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
         return True
     except Exception:
         return False
+
+def mask_password(pwd):
+    # 掩码:保留前3后2,中间打码;长度不足以安全保留时全部打码(避免短密码被原样重建)
+    pwd = pwd or ""
+    head, tail = 3, 2
+    if len(pwd) <= head + tail:
+        return "*" * len(pwd)
+    return pwd[:head] + "*" * (len(pwd) - head - tail) + pwd[-tail:]
 
 def load_state():
     import json
@@ -415,6 +426,15 @@ def show_current():
             print(format_line("出口 IP (出站)", f"{red}[✗ 不可用 - {perr}]{reset}", label_color=cyan))
     else:
         print(format_line("节点状态", "无活动连接", label_color=cyan))
+        if routing_mode == "fixed_ip":
+            fixed_id = cfg.get("fixed_node_id") or ""
+            fnode = next((n for n in load_nodes() if n.get("id") == fixed_id), None) if fixed_id else None
+            if fixed_id and fnode is None:
+                print(format_line("固定节点诊断", f"{red}该节点已不在节点列表(可能被服务商下线){reset}", label_color=cyan))
+                print(f"{yellow}  固定模式不会自动切换;可运行 'ml switch'/'ml auto' 切换,或 'ml fix <其它序号>' 重新固定。{reset}")
+            elif fnode is not None and fnode.get("probe_status") == "unavailable":
+                print(format_line("固定节点诊断", f"{red}该节点当前检测为不可用{reset}", label_color=cyan))
+                print(f"{yellow}  固定模式不会自动切换;可运行 'ml switch'/'ml auto' 切换,或 'ml fix <其它序号>' 重新固定。{reset}")
     print(f"{cyan}======================================================={reset}")
 
 def _resolve_node(selector):
@@ -451,6 +471,7 @@ def fix_node(selector=None):
         print(f"未找到匹配的节点: {selector}。请用 'ml nodes' 查看有效序号/ID。")
         return
     cfg = load_ui_auth()
+    was_disabled = not cfg.get("connection_enabled", True)
     cfg["routing_mode"] = "fixed_ip"
     cfg["fixed_node_id"] = node["id"]
     cfg["connection_enabled"] = True
@@ -462,14 +483,18 @@ def fix_node(selector=None):
     country = node.get("country") or node.get("country_short") or "未知"
     ip = node.get("ip") or node.get("remote_host") or "-"
     print(f"已设置为固定节点模式 -> {country} ({ip}) [ID: {node['id']}]")
+    if was_disabled:
+        print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
     restart_service()
     print("配置已生效，服务正在重启并连接该固定节点。可运行 'ml current' 查看状态。")
 
 def auto_mode():
     cfg = load_ui_auth()
     prev = cfg.get("routing_mode", "auto")
+    was_disabled = not cfg.get("connection_enabled", True)
     cfg["routing_mode"] = "auto"
     cfg["connection_enabled"] = True
+    cfg.pop("fixed_node_id", None)  # 切到 auto:清除残留固定节点,避免后续切回 fixed_ip 复用陈旧 pin
     try:
         save_ui_auth(cfg)
     except Exception as e:
@@ -477,12 +502,18 @@ def auto_mode():
         return
     print(f"已切换到自动选优模式(原模式: {prev})。")
     print("后端将自动选择延迟最低的可用节点，当前节点不可用时会自动切换到最佳备用节点。")
+    if was_disabled:
+        print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
     restart_service()
     print("配置已生效，服务正在重启。可运行 'ml current' 查看状态。")
 
-def best_node():
-    # 最佳节点:仅取可用节点,按延迟升序、评分降序(与后端 auto_switch_node 口径一致)
+def best_node(ip_type="all"):
+    # 最佳节点:可用节点按延迟升序、评分降序;按 routing_ip_type 过滤以对齐后端 auto_switch_node 候选口径
     avail = [n for n in load_nodes() if n.get("probe_status") == "available"]
+    if ip_type == "residential":
+        avail = [n for n in avail if n.get("ip_type") in ("residential", "mobile")]
+    elif ip_type == "hosting":
+        avail = [n for n in avail if n.get("ip_type") == "hosting"]
     if not avail:
         return None
     def key(n):
@@ -495,7 +526,9 @@ def best_node():
 
 def switch_node():
     yellow = "\033[1;33m"; green = "\033[1;32m"; reset = "\033[0m"
-    best = best_node()
+    cfg = load_ui_auth()
+    ip_type = cfg.get("routing_ip_type", "all")
+    best = best_node(ip_type)
     if not best:
         print("当前没有【已检测为可用】的节点,无法切换。")
         print("请先运行 'ml refresh' 重新拉取并检测节点,稍候再试。")
@@ -508,19 +541,22 @@ def switch_node():
 
     state = load_state()
     active_id = state.get("active_openvpn_node_id") or ""
-    cfg = load_ui_auth()
     if (active_id == best["id"] and not state.get("is_connecting", False)
             and cfg.get("routing_mode") == "auto"):
         print(f"{yellow}当前已连接到该最佳节点(自动模式),无需切换。{reset}")
         return
 
+    was_disabled = not cfg.get("connection_enabled", True)
     cfg["routing_mode"] = "auto"
     cfg["connection_enabled"] = True
+    cfg.pop("fixed_node_id", None)  # 切到 auto:清除上次 ml fix 残留的固定节点,避免后续切回 fixed_ip 复用陈旧 pin
     try:
         save_ui_auth(cfg)
     except Exception as e:
         print(f"写入配置失败: {e}")
         return
+    if was_disabled:
+        print(f"{yellow}注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。{reset}")
     print("正在切换到最佳可用节点...")
     restart_service()
     print("配置已生效,服务正在重启并连接最佳可用节点。可运行 'ml current' 查看状态。")
@@ -796,7 +832,7 @@ def print_status(with_exit_info=False):
     print_line(format_line("网页登录地址", f"{yellow}http://{login_ip}:{ui_port}/{secret_path}/{reset}", label_color=cyan))
     print_line(format_line("网页管理账号", f"{bold}{cfg.get('username', '未配置')}{reset}", label_color=cyan))
     curr_pwd = cfg.get("password", "")
-    masked_pwd = curr_pwd if len(curr_pwd) <= 4 else curr_pwd[:3] + "********" + curr_pwd[-2:]
+    masked_pwd = mask_password(curr_pwd)
     print_line(format_line("网页管理密码", masked_pwd, label_color=cyan))
     print_line()
     print_line(f"{cyan}【活动节点状态】{reset}")
@@ -1119,7 +1155,7 @@ def configure_credentials():
         print("=======================================================")
         curr_uname = cfg.get('username', '未配置')
         curr_pwd = cfg.get('password', '')
-        masked_pwd = curr_pwd if len(curr_pwd) <= 4 else curr_pwd[:3] + "********" + curr_pwd[-2:]
+        masked_pwd = mask_password(curr_pwd)
         print(f"当前管理账号: {curr_uname}")
         print(f"当前管理密码: {masked_pwd}")
         print("  [1] 自定义修改账号密码")
