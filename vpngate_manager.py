@@ -132,6 +132,9 @@ BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 
 lock = threading.RLock()
 maintenance_lock = threading.Lock()
+# 守卫:无可用节点时的后台补齐拉取,防止重复/背靠背触发导致疯狂拉取
+recovery_fetch_lock = threading.Lock()
+recovery_fetch_inflight = False
 active_sessions: dict[str, float] = {}
 active_openvpn_process: subprocess.Popen[str] | None = None
 active_openvpn_node_id = ""
@@ -1456,14 +1459,28 @@ def auto_switch_node(attempt: int = 0) -> None:
                 item["active"] = False
             write_json(NODES_FILE, nodes)
         set_state(active_openvpn_node_id="", last_check_message=msg)
-        
+
+        # 一次性后台补齐:拉取并测试新节点。若发现可用节点,maintain_valid_nodes 内部
+        # 会自动重连(见其末尾的 auto_switch_node 调用),因此这里不再递归调用
+        # auto_switch_node —— 否则在持续无可用节点时会形成无退避、无上限的拉取死循环。
+        # recovery_fetch_inflight 守卫确保同一时刻只有一个补齐任务在跑,周期性重试交由
+        # collector_loop 负责。
+        global recovery_fetch_inflight
+        with recovery_fetch_lock:
+            if recovery_fetch_inflight:
+                return
+            recovery_fetch_inflight = True
+
         def bg_fetch_and_switch():
+            global recovery_fetch_inflight
             try:
                 maintain_valid_nodes(force=False)
-                auto_switch_node()
             except Exception as e:
                 print(f"[自动切换后台补齐] 获取并测试节点失败: {e}", flush=True)
-        
+            finally:
+                with recovery_fetch_lock:
+                    recovery_fetch_inflight = False
+
         threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
 
 def connect_node(node_id: str) -> str:
