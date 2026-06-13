@@ -1948,6 +1948,25 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       display: none;
     }
 
+    .remember-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 18px 4px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .remember-checkbox {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--primary);
+      cursor: pointer;
+      margin: 0;
+    }
+
     .login-btn {
       width: 100%;
       height: 48px;
@@ -2002,14 +2021,19 @@ LOGIN_HTML = r"""<!DOCTYPE html>
             <input type="text" id="username" name="username" class="input-field" placeholder="请输入管理账号" required autocomplete="username">
           </div>
         </div>
-        <div class="form-group" style="margin-top: 16px;">
+        <div class="form-group" style="margin-top: 16px; margin-bottom: 14px;">
           <label class="form-label" for="password">安全密码</label>
           <div class="input-wrapper">
             <input type="password" id="password" name="password" class="input-field" placeholder="请输入安全密码" required autocomplete="current-password">
           </div>
           <div id="error_text" class="error-message"></div>
         </div>
-        
+
+        <label class="remember-row" for="remember">
+          <input type="checkbox" id="remember" class="remember-checkbox">
+          <span>记住账号和密码</span>
+        </label>
+
         <button type="submit" id="submit_btn" class="login-btn">
           <span>登录</span>
         </button>
@@ -2018,26 +2042,48 @@ LOGIN_HTML = r"""<!DOCTYPE html>
   </div>
 
   <script>
+    const REMEMBER_KEY = "aimilivpn_login";
+
+    // 页面加载时回填已记住的账号密码
+    (function restoreLogin() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(REMEMBER_KEY) || "null");
+        if (saved && typeof saved === "object") {
+          document.getElementById("username").value = saved.username || "";
+          document.getElementById("password").value = saved.password || "";
+          document.getElementById("remember").checked = true;
+        }
+      } catch (e) {}
+    })();
+
     async function handleLogin(e) {
       e.preventDefault();
       const uname = document.getElementById("username").value.trim();
       const pwd = document.getElementById("password").value.trim();
+      const remember = document.getElementById("remember").checked;
       const errorText = document.getElementById("error_text");
       const submitBtn = document.getElementById("submit_btn");
-      
+
       errorText.style.display = "none";
       submitBtn.disabled = true;
       submitBtn.querySelector("span").textContent = "正在验证...";
-      
+
       try {
         const response = await fetch("./api/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: uname, password: pwd })
         });
-        
+
         const data = await response.json();
         if (response.ok && data.ok) {
+          try {
+            if (remember) {
+              localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username: uname, password: pwd }));
+            } else {
+              localStorage.removeItem(REMEMBER_KEY);
+            }
+          } catch (e) {}
           window.location.reload();
         } else {
           errorText.textContent = data.error || "账号或密码不正确，请重新输入";
