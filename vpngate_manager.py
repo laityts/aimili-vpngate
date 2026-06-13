@@ -364,6 +364,10 @@ def get_state() -> dict[str, Any]:
     state.setdefault("last_fetch_status", "not_started")
     state.setdefault("last_check_message", "")
     state.setdefault("blacklisted_nodes", 0)
+    state.setdefault("connecting_phase", "")
+    state.setdefault("scan_done", 0)
+    state.setdefault("scan_total", 0)
+    state.setdefault("scan_available", 0)
     
     # Pre-populate settings inputs in UI
     ui_cfg = load_ui_config()
@@ -399,6 +403,7 @@ def clear_active_connection_state(message: str) -> None:
     set_state(
         active_openvpn_node_id="",
         is_connecting=False,
+        connecting_phase="",
         active_node_latency="无活动连接",
         last_check_message=message,
     )
@@ -1570,14 +1575,14 @@ def connect_node(node_id: str) -> str:
             )
             
         latency_str = f"{last_active_latency} ms" if last_active_latency > 0 else "检测超时"
-        set_state(active_openvpn_node_id=node_id, is_connecting=False, last_check_message=f"Connected {node_id}", active_node_latency=latency_str)
+        set_state(active_openvpn_node_id=node_id, is_connecting=False, connecting_phase="", last_check_message=f"Connected {node_id}", active_node_latency=latency_str)
         log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，出口网卡 tun0 已启用")
         return f"Connected {node_id}"
     except Exception as exc:
         if stopped_existing or (active_openvpn_node_id == node_id and not active_openvpn_running()):
             clear_active_connection_state(f"连接失败: {exc}")
         else:
-            set_state(is_connecting=False, last_check_message=f"连接失败: {exc}")
+            set_state(is_connecting=False, connecting_phase="", last_check_message=f"连接失败: {exc}")
         raise
     finally:
         with lock:
@@ -1587,9 +1592,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
     if not maintenance_lock.acquire(blocking=False):
-        msg = "节点维护任务正在运行，请稍后再试"
-        set_state(last_check_message=msg)
-        return msg
+        # 不要覆盖正在运行任务实时写入的 last_check_message/进度,仅返回 busy 提示
+        return "节点维护任务正在运行，请稍后再试"
     is_connecting = True
     try:
         if force:
@@ -1625,7 +1629,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         is_connecting = True
 
         try:
-            set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表...")
+            set_state(is_connecting=True, connecting_phase="fetching",
+                      last_check_message="正在拉取最新的免费 VPN 节点列表...")
             candidates = fetch_candidates()
         except Exception as exc:
             vpn_utils.check_and_fix_dns()
@@ -1681,10 +1686,12 @@ def maintain_valid_nodes(force: bool = False) -> str:
         log_to_json("INFO", "Main", msg)
         
         set_state(is_connecting=True, connecting_phase="scanning",
+                  scan_done=0, scan_total=len(to_test_ids), scan_available=0,
                   last_check_message=f"正在检测节点可用性 (0/{len(to_test_ids)})...")
 
         def _scan_progress(done, total, available):
             set_state(is_connecting=True, connecting_phase="scanning",
+                      scan_done=done, scan_total=total, scan_available=available,
                       last_check_message=f"正在检测节点可用性 ({done}/{total})，已发现 {available} 个可用节点...")
 
         test_multiple_nodes(to_test_ids, progress_cb=_scan_progress)
@@ -1754,12 +1761,17 @@ def maintain_valid_nodes(force: bool = False) -> str:
             last_check_message=message,
             active_openvpn_node_id=active_openvpn_node_id,
             valid_nodes=valid_nodes_count,
+            connecting_phase="",
+            scan_done=0,
+            scan_total=0,
+            scan_available=0,
         )
         return message
     except Exception as e:
         raise e
     finally:
         is_connecting = False
+        set_state(connecting_phase="")
         maintenance_lock.release()
 
 
@@ -3757,20 +3769,40 @@ function render(){
   const activeCardContainer = $("active_node_card");
   if (state.is_connecting && !activeNode) {
     const isScanning = state.connecting_phase === "scanning";
-    const phaseBadge = isScanning ? "正在检测" : "正在连接";
+    const isFetching = state.connecting_phase === "fetching";
+    const phaseBadge = isScanning ? "正在检测" : (isFetching ? "正在拉取" : "正在连接");
     const phaseTitle = isScanning
       ? "正在检测节点池"
-      : (state.active_node_latency || "正在连接节点...");
+      : (isFetching ? "正在拉取节点列表" : (state.active_node_latency || "正在连接节点..."));
     const phaseHint = isScanning
       ? "正在逐个测试候选节点的连通性与延迟，请稍候..."
-      : "正在与最优节点建立加密隧道，请稍候...";
+      : (isFetching
+          ? "正在从 VPNGate 获取最新的免费节点列表，请稍候..."
+          : "正在与最优节点建立加密隧道，请稍候...");
+    let progressHtml = "";
+    if (isScanning && (state.scan_total || 0) > 0) {
+      const done = state.scan_done || 0;
+      const total = state.scan_total || 0;
+      const avail = state.scan_available || 0;
+      const pct = total > 0 ? Math.round(done * 100 / total) : 0;
+      progressHtml = `
+            <div style="margin-top: 10px;">
+              <div style="display:flex; justify-content:space-between; font-size:12px; color: var(--text-secondary); margin-bottom: 4px;">
+                <span>检测进度 ${done}/${total}</span>
+                <span>已发现 <strong style="color: var(--success);">${avail}</strong> 个可用 · ${pct}%</span>
+              </div>
+              <div style="height:8px; background: rgba(245,158,11,0.12); border-radius: 6px; overflow:hidden;">
+                <div style="height:100%; width:${pct}%; background: var(--warning-gradient); border-radius:6px; transition: width .4s ease;"></div>
+              </div>
+            </div>`;
+    }
     activeCardContainer.innerHTML = `
       <div class="active-card" style="background: var(--bg-surface); border-color: var(--warning); box-shadow: 0 0 15px rgba(245, 158, 11, 0.15);">
-        <div class="active-card-info">
+        <div class="active-card-info" style="flex-wrap: wrap;">
           <div class="stat-icon-wrapper" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); width: 48px; height: 48px; border-radius: 12px;">
             <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: #f59e0b; width: 24px; height: 24px; animation: spin 2s linear infinite;"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18" /></svg>
           </div>
-          <div class="active-card-details">
+          <div class="active-card-details" style="flex: 1; min-width: 0;">
             <div class="active-card-title" style="color: var(--text-primary);">
               <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>${phaseBadge}</span>
               <strong>${esc(phaseTitle)}</strong>
@@ -3778,6 +3810,7 @@ function render(){
             <div class="active-card-meta" style="margin-top: 4px;">
               ${esc(state.last_check_message || phaseHint)}
             </div>
+            ${progressHtml}
           </div>
         </div>
       </div>
@@ -4662,7 +4695,10 @@ load();
 
 // 每 10 秒在前台空闲时自动更新节点与状态，无需手动刷新页面
 setInterval(async () => {
-  if (typeof state !== "undefined" && !state.is_connecting && (!testingNodeIds || !testingNodeIds.size) && document.visibilityState === "visible") {
+  // 扫描(检测节点池)与拉取阶段也允许后台刷新,使任务状态与检测进度条持续更新;
+  // 连接/握手阶段交由 1s 的 startConnectionPolling 处理,避免重复轮询
+  const bgTask = typeof state !== "undefined" && (state.connecting_phase === "scanning" || state.connecting_phase === "fetching");
+  if (typeof state !== "undefined" && (!state.is_connecting || bgTask) && (!testingNodeIds || !testingNodeIds.size) && document.visibilityState === "visible") {
     try {
       const r = await fetch("./api/nodes");
       const d = await r.json();

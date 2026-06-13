@@ -407,8 +407,22 @@ def show_current():
     print(format_line("IP出站类型过滤", iptype_val, label_color=cyan))
     print(f"{cyan}-------------------------------------------------------{reset}")
     if is_connecting:
-        msg = state.get("last_check_message") or "正在建立连接..."
-        print(format_line("节点状态", f"{yellow}{msg}{reset}", label_color=cyan))
+        phase = state.get("connecting_phase", "")
+        if phase == "fetching":
+            print(format_line("任务状态", f"{yellow}[拉取节点] 正在获取最新节点列表{reset}", label_color=cyan))
+            print(format_line("任务进度", state.get("last_check_message") or "正在从 VPNGate 拉取节点...", label_color=cyan))
+        elif phase == "scanning":
+            done = state.get("scan_done", 0); total = state.get("scan_total", 0); avail = state.get("scan_available", 0)
+            print(format_line("任务状态", f"{yellow}[检测节点池] 正在逐个测试候选节点连通性{reset}", label_color=cyan))
+            bar, pct = _progress_bar(done, total)
+            prog_val = f"{yellow}{bar}{reset} {pct}% ({done}/{total})" if bar else f"{done}/{total}"
+            print(format_line("检测进度", prog_val, label_color=cyan))
+            print(format_line("已发现可用", f"{green}{avail}{reset} 个", label_color=cyan))
+        else:
+            short = state.get("active_node_latency") or "连接中"
+            msg = state.get("last_check_message") or "正在建立连接..."
+            print(format_line("任务状态", f"{yellow}[建立连接] {short}{reset}", label_color=cyan))
+            print(format_line("任务进度", f"{yellow}{msg}{reset}", label_color=cyan))
     elif active_ip:
         print(format_line("活动节点 ID", active_id, label_color=cyan))
         print(format_line("入口 IP", f"{bold}{active_ip}{reset}", label_color=cyan))
@@ -778,6 +792,18 @@ def _latency_color(val, green, yellow, red, reset):
     c = green if n <= 150 else (yellow if n <= 400 else red)
     return f"{c}{val}{reset}"
 
+def _progress_bar(done, total, width=20):
+    # 返回 (进度条字符串, 百分比);total<=0 时返回 ("", 0)
+    try:
+        done = int(done); total = int(total)
+    except (TypeError, ValueError):
+        return "", 0
+    if total <= 0:
+        return "", 0
+    pct = max(0, min(100, int(done * 100 / total)))
+    filled = int(width * pct / 100)
+    return "█" * filled + "░" * (width - filled), pct
+
 def print_status(with_exit_info=False):
     cfg = load_ui_cfg()
     ui_port = cfg.get("port", 8787)
@@ -837,8 +863,22 @@ def print_status(with_exit_info=False):
     print_line()
     print_line(f"{cyan}【活动节点状态】{reset}")
     if is_connecting:
-        connecting_msg = state.get('last_check_message') or '正在建立加密隧道并验证路由规则...'
-        print_line(format_line("节点状态", f"{yellow}{connecting_msg}{reset}", label_color=cyan))
+        phase = state.get("connecting_phase", "")
+        if phase == "fetching":
+            print_line(format_line("任务状态", f"{yellow}[拉取节点] 正在获取最新节点列表{reset}", label_color=cyan))
+            print_line(format_line("任务进度", state.get('last_check_message') or "正在从 VPNGate 拉取节点...", label_color=cyan))
+        elif phase == "scanning":
+            done = state.get("scan_done", 0); total = state.get("scan_total", 0); avail = state.get("scan_available", 0)
+            print_line(format_line("任务状态", f"{yellow}[检测节点池] 正在逐个测试候选节点连通性{reset}", label_color=cyan))
+            bar, pct = _progress_bar(done, total)
+            prog_val = f"{yellow}{bar}{reset} {pct}% ({done}/{total})" if bar else f"{done}/{total}"
+            print_line(format_line("检测进度", prog_val, label_color=cyan))
+            print_line(format_line("已发现可用", f"{green}{avail}{reset} 个", label_color=cyan))
+        else:
+            short = state.get("active_node_latency") or "连接中"
+            detail = state.get('last_check_message') or '正在建立加密隧道并验证路由规则...'
+            print_line(format_line("任务状态", f"{yellow}[建立连接] {short}{reset}", label_color=cyan))
+            print_line(format_line("任务进度", f"{yellow}{detail}{reset}", label_color=cyan))
     elif active_ip:
         proxy_ip = state.get("proxy_ip", "-")
         proxy_latency = state.get("proxy_latency_ms", 0)
