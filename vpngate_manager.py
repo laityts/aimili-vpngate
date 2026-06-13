@@ -3676,6 +3676,18 @@ const translateIpType = t => {
   return dict[t] || t || "-";
 };
 
+// 路由模式徽章:与 CLI(ml status/current)文案、配色语义一致 —— 自动/收藏绿色,固定类黄色
+const routingModeBadge = mode => {
+  const map = {
+    auto:         { text: "自动选优", c: "#34d399", bg: "rgba(16,185,129,0.15)", b: "rgba(16,185,129,0.3)" },
+    fixed_ip:     { text: "固定 IP", c: "#f59e0b", bg: "rgba(245,158,11,0.15)", b: "rgba(245,158,11,0.3)" },
+    fixed_region: { text: "固定地区", c: "#f59e0b", bg: "rgba(245,158,11,0.15)", b: "rgba(245,158,11,0.3)" },
+    favorites:    { text: "收藏优先", c: "#34d399", bg: "rgba(16,185,129,0.15)", b: "rgba(16,185,129,0.3)" },
+  };
+  const m = map[mode] || { text: "未知模式", c: "var(--text-secondary)", bg: "rgba(255,255,255,0.06)", b: "rgba(255,255,255,0.12)" };
+  return `<span class="badge" style="padding:2px 8px; background:${m.bg}; color:${m.c}; border-color:${m.b};" title="当前路由模式">${m.text}</span>`;
+};
+
 const translateCountry = c => {
   const dict = {
     "Japan": "日本",
@@ -3869,6 +3881,7 @@ function render(){
             <div class="active-card-title" style="color: var(--text-primary);">
               <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>${phaseBadge}</span>
               <strong>${esc(phaseTitle)}</strong>
+              ${routingModeBadge(state.routing_mode || "auto")}
             </div>
             <div class="active-card-meta" style="margin-top: 4px;">
               ${esc(state.last_check_message || phaseHint)}
@@ -3892,6 +3905,7 @@ function render(){
             <div class="active-card-title">
               <span class="badge available"><span class="badge-pulse"></span>已连接</span>
               <strong>${esc(translateCountry(activeNode.country))} 节点</strong>
+              ${routingModeBadge(state.routing_mode || "auto")}
             </div>
             <div class="active-card-value mono" style="font-size: 20px; margin-top: 2px;">
               ${esc(activeNode.ip || activeNode.remote_host)}:${activeNode.remote_port || ""}
@@ -3920,6 +3934,7 @@ function render(){
           <div class="active-card-details">
             <div class="active-card-title" style="color: var(--text-secondary);">
               <span class="badge unavailable" style="padding: 2px 8px;">未连接</span> 当前未连接 VPN 节点
+              ${routingModeBadge(state.routing_mode || "auto")}
             </div>
             <div class="active-card-meta" style="margin-top: 4px;">
               在下方列表中选择一个可用备用节点并点击 “切换” 按钮开始连接。
