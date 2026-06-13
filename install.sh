@@ -326,6 +326,20 @@ def _iptype_text(n):
     t = (n.get("ip_type") or "").strip()
     return {"residential": "住宅IP", "mobile": "住宅IP(移动)", "hosting": "机房IP"}.get(t, "未知")
 
+def routing_mode_label(mode):
+    # 路由模式语义化标签(ml status / ml current 共用,保证两处文案与配色一致)
+    # auto/favorites 会自动选节点显示绿色;fixed_ip/fixed_region 为人工固定显示黄色(提示不会自动切换)
+    green = "\033[1;32m"; yellow = "\033[1;33m"; reset = "\033[0m"
+    labels = {
+        "auto": "自动选优 (可用性失效自动切换)",
+        "fixed_ip": "固定节点",
+        "fixed_region": "固定地区",
+        "favorites": "收藏优先",
+    }
+    text = labels.get(mode, mode)
+    color = green if mode in ("auto", "favorites") else (yellow if mode in ("fixed_ip", "fixed_region") else "")
+    return f"{color}{text}{reset}" if color else text
+
 def load_ui_auth():
     import json
     cfg = {}
@@ -386,7 +400,6 @@ def show_current():
     yellow = "\033[1;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"; cyan = "\033[1;36m"
     state = load_state()
     cfg = load_ui_auth()
-    mode_map = {"auto": "自动选优 (可用性失效自动切换)", "fixed_ip": "固定节点", "fixed_region": "固定地区", "favorites": "收藏优先"}
     routing_mode = cfg.get("routing_mode", "auto")
     connection_enabled = cfg.get("connection_enabled", True)
     active_ip, active_loc = get_active_node_info()
@@ -397,7 +410,7 @@ def show_current():
     print(f"               {cyan}当前节点状态{reset}")
     print(f"{cyan}======================================================={reset}")
     print(format_line("连接总开关", f"{green}[✓ 已启用]{reset}" if connection_enabled else f"{red}[✗ 已禁用]{reset}", label_color=cyan))
-    print(format_line("路由模式", mode_map.get(routing_mode, routing_mode), label_color=cyan))
+    print(format_line("路由模式", routing_mode_label(routing_mode), label_color=cyan))
     if routing_mode == "fixed_ip":
         print(format_line("固定节点 ID", cfg.get("fixed_node_id") or "(未指定)", label_color=cyan))
     ip_type = cfg.get("routing_ip_type", "all")
@@ -811,7 +824,9 @@ def print_status(with_exit_info=False):
     proxy_port = cfg.get("proxy_port", 7928)
     state = load_state()
     is_connecting = state.get("is_connecting", False)
-    routing_ip_type = load_ui_auth().get("routing_ip_type", "all")
+    ui_auth = load_ui_auth()
+    routing_ip_type = ui_auth.get("routing_ip_type", "all")
+    routing_mode = ui_auth.get("routing_mode", "auto")
     
     gateway_ok = check_port_listening(proxy_port)
     service_ok = check_service_active("aimilivpn.service")
@@ -862,6 +877,7 @@ def print_status(with_exit_info=False):
     print_line(format_line("网页管理密码", masked_pwd, label_color=cyan))
     print_line()
     print_line(f"{cyan}【活动节点状态】{reset}")
+    print_line(format_line("路由模式", routing_mode_label(routing_mode), label_color=cyan))
     if is_connecting:
         phase = state.get("connecting_phase", "")
         if phase == "fetching":
