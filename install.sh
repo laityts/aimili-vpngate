@@ -419,7 +419,23 @@ def show_current():
     iptype_val = f"{iptype_color}{iptype_disp}{reset}" if iptype_color else iptype_disp
     print(format_line("IP出站类型过滤", iptype_val, label_color=cyan))
     print(f"{cyan}-------------------------------------------------------{reset}")
-    if is_connecting:
+    if active_ip:
+        # 与 web 卡片一致:有活动节点时优先显示已连接(即使后台正在拉取/检测)
+        print(format_line("活动节点 ID", active_id, label_color=cyan))
+        print(format_line("入口 IP", f"{bold}{active_ip}{reset}", label_color=cyan))
+        print(format_line("节点地区", active_loc or "未知", label_color=cyan))
+        latency = state.get("active_node_latency", "-")
+        print(format_line("节点延迟", _latency_color(str(latency), green, yellow, red, reset), label_color=cyan))
+        proxy_ok = state.get("proxy_ok", False)
+        proxy_ip = state.get("proxy_ip", "-")
+        if proxy_ok and proxy_ip and proxy_ip != "-":
+            print(format_line("出口 IP (出站)", f"{bold}{proxy_ip}{reset}", label_color=cyan))
+            pl = state.get("proxy_latency_ms", 0)
+            print(format_line("本地代理延迟", _latency_color(f"{pl} ms" if pl else "检测中...", green, yellow, red, reset), label_color=cyan))
+        else:
+            perr = state.get("proxy_error") or "检测中/未就绪"
+            print(format_line("出口 IP (出站)", f"{red}[✗ 不可用 - {perr}]{reset}", label_color=cyan))
+    elif is_connecting:
         phase = state.get("connecting_phase", "")
         if phase == "fetching":
             print(format_line("任务状态", f"{yellow}[拉取节点] 正在获取最新节点列表{reset}", label_color=cyan))
@@ -436,21 +452,6 @@ def show_current():
             msg = state.get("last_check_message") or "正在建立连接..."
             print(format_line("任务状态", f"{yellow}[建立连接] {short}{reset}", label_color=cyan))
             print(format_line("任务进度", f"{yellow}{msg}{reset}", label_color=cyan))
-    elif active_ip:
-        print(format_line("活动节点 ID", active_id, label_color=cyan))
-        print(format_line("入口 IP", f"{bold}{active_ip}{reset}", label_color=cyan))
-        print(format_line("节点地区", active_loc or "未知", label_color=cyan))
-        latency = state.get("active_node_latency", "-")
-        print(format_line("节点延迟", _latency_color(str(latency), green, yellow, red, reset), label_color=cyan))
-        proxy_ok = state.get("proxy_ok", False)
-        proxy_ip = state.get("proxy_ip", "-")
-        if proxy_ok and proxy_ip and proxy_ip != "-":
-            print(format_line("出口 IP (出站)", f"{bold}{proxy_ip}{reset}", label_color=cyan))
-            pl = state.get("proxy_latency_ms", 0)
-            print(format_line("本地代理延迟", _latency_color(f"{pl} ms" if pl else "检测中...", green, yellow, red, reset), label_color=cyan))
-        else:
-            perr = state.get("proxy_error") or "检测中/未就绪"
-            print(format_line("出口 IP (出站)", f"{red}[✗ 不可用 - {perr}]{reset}", label_color=cyan))
     else:
         print(format_line("节点状态", "无活动连接", label_color=cyan))
         if routing_mode == "fixed_ip":
@@ -878,24 +879,8 @@ def print_status(with_exit_info=False):
     print_line()
     print_line(f"{cyan}【活动节点状态】{reset}")
     print_line(format_line("路由模式", routing_mode_label(routing_mode), label_color=cyan))
-    if is_connecting:
-        phase = state.get("connecting_phase", "")
-        if phase == "fetching":
-            print_line(format_line("任务状态", f"{yellow}[拉取节点] 正在获取最新节点列表{reset}", label_color=cyan))
-            print_line(format_line("任务进度", state.get('last_check_message') or "正在从 VPNGate 拉取节点...", label_color=cyan))
-        elif phase == "scanning":
-            done = state.get("scan_done", 0); total = state.get("scan_total", 0); avail = state.get("scan_available", 0)
-            print_line(format_line("任务状态", f"{yellow}[检测节点池] 正在逐个测试候选节点连通性{reset}", label_color=cyan))
-            bar, pct = _progress_bar(done, total)
-            prog_val = f"{yellow}{bar}{reset} {pct}% ({done}/{total})" if bar else f"{done}/{total}"
-            print_line(format_line("检测进度", prog_val, label_color=cyan))
-            print_line(format_line("已发现可用", f"{green}{avail}{reset} 个", label_color=cyan))
-        else:
-            short = state.get("active_node_latency") or "连接中"
-            detail = state.get('last_check_message') or '正在建立加密隧道并验证路由规则...'
-            print_line(format_line("任务状态", f"{yellow}[建立连接] {short}{reset}", label_color=cyan))
-            print_line(format_line("任务进度", f"{yellow}{detail}{reset}", label_color=cyan))
-    elif active_ip:
+    if active_ip:
+        # 与 web 卡片一致:有活动节点时优先显示已连接(即使后台正在拉取/检测)
         proxy_ip = state.get("proxy_ip", "-")
         proxy_latency = state.get("proxy_latency_ms", 0)
         proxy_ok = state.get("proxy_ok", False)
@@ -938,6 +923,23 @@ def print_status(with_exit_info=False):
         else:
             proxy_err = state.get("proxy_error") or "检测中/未就绪"
             print_line(format_line("出口 IP (出站)", f"{red}[✗ 不可用 - {proxy_err}]{reset}", label_color=cyan))
+    elif is_connecting:
+        phase = state.get("connecting_phase", "")
+        if phase == "fetching":
+            print_line(format_line("任务状态", f"{yellow}[拉取节点] 正在获取最新节点列表{reset}", label_color=cyan))
+            print_line(format_line("任务进度", state.get('last_check_message') or "正在从 VPNGate 拉取节点...", label_color=cyan))
+        elif phase == "scanning":
+            done = state.get("scan_done", 0); total = state.get("scan_total", 0); avail = state.get("scan_available", 0)
+            print_line(format_line("任务状态", f"{yellow}[检测节点池] 正在逐个测试候选节点连通性{reset}", label_color=cyan))
+            bar, pct = _progress_bar(done, total)
+            prog_val = f"{yellow}{bar}{reset} {pct}% ({done}/{total})" if bar else f"{done}/{total}"
+            print_line(format_line("检测进度", prog_val, label_color=cyan))
+            print_line(format_line("已发现可用", f"{green}{avail}{reset} 个", label_color=cyan))
+        else:
+            short = state.get("active_node_latency") or "连接中"
+            detail = state.get('last_check_message') or '正在建立加密隧道并验证路由规则...'
+            print_line(format_line("任务状态", f"{yellow}[建立连接] {short}{reset}", label_color=cyan))
+            print_line(format_line("任务进度", f"{yellow}{detail}{reset}", label_color=cyan))
     else:
         print_line(format_line("节点状态", "无活动连接", label_color=cyan))
     print_line()
