@@ -651,6 +651,28 @@ def set_iptype(value=None):
     restart_service()
     print("配置已生效,服务正在重启并按新过滤重新选择节点。可运行 'ml current' 查看状态。")
 
+# 路由模式切换(ml mode):覆盖 auto/fixed_ip/fixed_region/favorites 四种模式。
+# 别名与编号统一归一化为规范模式值;输入不区分大小写、忽略首尾空白。
+ROUTING_MODE_ALIASES = {
+    "auto": "auto", "1": "auto",
+    "fixed_ip": "fixed_ip", "fix": "fixed_ip", "2": "fixed_ip",
+    "fixed_region": "fixed_region", "region": "fixed_region", "3": "fixed_region",
+    "favorites": "favorites", "fav": "favorites", "4": "favorites",
+}
+# 交互菜单展示顺序与简短描述(规范模式值 -> 描述);"当前:" 行另用 routing_mode_label() 带色全标签。
+ROUTING_MODE_MENU = [
+    ("auto", "自动选优 (失效自动切换)"),
+    ("fixed_ip", "固定节点 (锁定不切换)"),
+    ("fixed_region", "固定地区 (只连指定国家)"),
+    ("favorites", "收藏优先 (只连收藏节点)"),
+]
+
+def _normalize_routing_mode(value):
+    # 归一化模式输入:全名/别名/编号 -> 规范模式值;无法识别返回 None
+    if value is None:
+        return None
+    return ROUTING_MODE_ALIASES.get(str(value).strip().lower())
+
 def ping_ip(ip):
     if not ip:
         return None

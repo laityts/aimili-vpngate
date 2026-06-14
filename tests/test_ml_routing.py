@@ -1,0 +1,75 @@
+import importlib.util
+import os
+import tempfile
+import unittest
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_ml_module():
+    """从 install.sh 提取 /usr/bin/ml 的 Python 段并加载为模块(无需 root)。"""
+    path = os.path.join(REPO, "install.sh")
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith("cat > /usr/bin/ml"):
+            start = i + 1
+            break
+    if start is None:
+        raise RuntimeError("未找到 ml 脚本 heredoc 起始行")
+    end = None
+    for j in range(start, len(lines)):
+        if lines[j].strip() == "EOF":
+            end = j
+            break
+    if end is None:
+        raise RuntimeError("未找到 ml 脚本 heredoc 结束 EOF")
+    code = "\n".join(lines[start:end])
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8")
+    tmp.write(code)
+    tmp.close()
+    spec = importlib.util.spec_from_file_location("ml_cli", tmp.name)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestNormalizeRoutingMode(unittest.TestCase):
+    def setUp(self):
+        self.ml = load_ml_module()
+
+    def test_full_names(self):
+        n = self.ml._normalize_routing_mode
+        self.assertEqual(n("auto"), "auto")
+        self.assertEqual(n("fixed_ip"), "fixed_ip")
+        self.assertEqual(n("fixed_region"), "fixed_region")
+        self.assertEqual(n("favorites"), "favorites")
+
+    def test_aliases(self):
+        n = self.ml._normalize_routing_mode
+        self.assertEqual(n("fix"), "fixed_ip")
+        self.assertEqual(n("region"), "fixed_region")
+        self.assertEqual(n("fav"), "favorites")
+
+    def test_numbers(self):
+        n = self.ml._normalize_routing_mode
+        self.assertEqual(n("1"), "auto")
+        self.assertEqual(n("2"), "fixed_ip")
+        self.assertEqual(n("3"), "fixed_region")
+        self.assertEqual(n("4"), "favorites")
+
+    def test_case_and_space_insensitive(self):
+        n = self.ml._normalize_routing_mode
+        self.assertEqual(n("  AUTO "), "auto")
+        self.assertEqual(n("Fix"), "fixed_ip")
+
+    def test_invalid_and_none(self):
+        n = self.ml._normalize_routing_mode
+        self.assertIsNone(n("bogus"))
+        self.assertIsNone(n(""))
+        self.assertIsNone(n(None))
+
+
+if __name__ == "__main__":
+    unittest.main()
