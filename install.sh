@@ -673,6 +673,36 @@ def _normalize_routing_mode(value):
         return None
     return ROUTING_MODE_ALIASES.get(str(value).strip().lower())
 
+def _collect_countries(nodes):
+    # 从缓存节点收集去重国家:name=中文国家名(后端已存中文),count=节点数,shorts=该国家的 country_short 集合
+    by_name = {}
+    for n in nodes:
+        name = (n.get("country") or "").strip()
+        if not name:
+            continue
+        entry = by_name.setdefault(name, {"name": name, "count": 0, "shorts": set()})
+        entry["count"] += 1
+        short = (n.get("country_short") or "").strip()
+        if short:
+            entry["shorts"].add(short)
+    return [by_name[k] for k in sorted(by_name.keys())]
+
+def _resolve_country(sel, countries):
+    # 解析用户输入 -> 规范中文国家名;支持序号(1-based)/中文名/两位代码(忽略大小写),无匹配返回 None
+    sel = str(sel).strip()
+    if not sel:
+        return None
+    if sel.isdigit():
+        idx = int(sel)
+        if 1 <= idx <= len(countries):
+            return countries[idx - 1]["name"]
+        return None
+    low = sel.lower()
+    for c in countries:
+        if c["name"].lower() == low or low in {s.lower() for s in c["shorts"]}:
+            return c["name"]
+    return None
+
 def ping_ip(ip):
     if not ip:
         return None

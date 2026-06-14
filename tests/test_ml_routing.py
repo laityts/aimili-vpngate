@@ -75,5 +75,53 @@ class TestNormalizeRoutingMode(unittest.TestCase):
         self.assertIsNone(n(None))
 
 
+class TestCountryResolve(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.ml = load_ml_module()
+
+    def setUp(self):
+        self.nodes = [
+            {"country": "日本", "country_short": "JP"},
+            {"country": "日本", "country_short": "JP"},
+            {"country": "美国", "country_short": "US"},
+            {"country": "", "country_short": ""},   # 空国家应被跳过
+            {"country": "韩国", "country_short": "KR"},
+        ]
+
+    def test_collect_countries_dedup_count_sorted(self):
+        cs = self.ml._collect_countries(self.nodes)
+        names = [c["name"] for c in cs]
+        self.assertEqual(names, sorted(names))
+        self.assertIn("日本", names)
+        self.assertIn("美国", names)
+        self.assertIn("韩国", names)
+        self.assertNotIn("", names)
+        jp = next(c for c in cs if c["name"] == "日本")
+        self.assertEqual(jp["count"], 2)
+        self.assertEqual(jp["shorts"], {"JP"})
+
+    def test_resolve_by_index(self):
+        cs = self.ml._collect_countries(self.nodes)
+        first = cs[0]["name"]
+        self.assertEqual(self.ml._resolve_country("1", cs), first)
+        self.assertIsNone(self.ml._resolve_country("99", cs))
+        self.assertIsNone(self.ml._resolve_country("0", cs))
+
+    def test_resolve_by_chinese_name(self):
+        cs = self.ml._collect_countries(self.nodes)
+        self.assertEqual(self.ml._resolve_country("日本", cs), "日本")
+
+    def test_resolve_by_short_code_case_insensitive(self):
+        cs = self.ml._collect_countries(self.nodes)
+        self.assertEqual(self.ml._resolve_country("jp", cs), "日本")
+        self.assertEqual(self.ml._resolve_country("US", cs), "美国")
+
+    def test_resolve_invalid(self):
+        cs = self.ml._collect_countries(self.nodes)
+        self.assertIsNone(self.ml._resolve_country("法国", cs))
+        self.assertIsNone(self.ml._resolve_country("", cs))
+
+
 if __name__ == "__main__":
     unittest.main()
