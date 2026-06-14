@@ -776,6 +776,39 @@ def _set_favorites():
     restart_service()
     print("配置已生效，服务正在重启并优先在收藏节点中连接。可运行 'ml current' 查看状态。")
 
+def set_routing_mode(value=None, arg=None):
+    if value is None:
+        cfg = load_ui_auth()
+        current = cfg.get("routing_mode", "auto")
+        print("=======================================================")
+        print("               路由模式切换")
+        print("=======================================================")
+        print(f"当前: {routing_mode_label(current)}")
+        for i, (key, desc) in enumerate(ROUTING_MODE_MENU, 1):
+            mark = " (当前)" if key == current else ""
+            print(f"  [{i}] {key:<14}{desc}{mark}")
+        print("=======================================================")
+        try:
+            value = input("请输入要切换到的【序号 1-4】或模式名(直接回车取消): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消。")
+            return
+        if not value:
+            print("已取消。")
+            return
+    mode = _normalize_routing_mode(value)
+    if mode is None:
+        print(f"无效的路由模式: {value}。可选: auto / fixed_ip(fix) / fixed_region(region) / favorites(fav),或序号 1-4。")
+        return
+    if mode == "auto":
+        auto_mode()
+    elif mode == "fixed_ip":
+        fix_node(arg)
+    elif mode == "fixed_region":
+        _set_fixed_region(arg)
+    elif mode == "favorites":
+        _set_favorites()
+
 def ping_ip(ip):
     if not ip:
         return None

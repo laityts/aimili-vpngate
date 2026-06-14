@@ -2,6 +2,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -121,6 +122,59 @@ class TestCountryResolve(unittest.TestCase):
         cs = self.ml._collect_countries(self.nodes)
         self.assertIsNone(self.ml._resolve_country("法国", cs))
         self.assertIsNone(self.ml._resolve_country("", cs))
+
+
+class TestSetRoutingModeDispatch(unittest.TestCase):
+    def setUp(self):
+        self.ml = load_ml_module()
+
+    def _patches(self):
+        # 拦截四个会产生副作用的分支目标,断言分发正确
+        return (
+            mock.patch.object(self.ml, "auto_mode"),
+            mock.patch.object(self.ml, "fix_node"),
+            mock.patch.object(self.ml, "_set_fixed_region"),
+            mock.patch.object(self.ml, "_set_favorites"),
+        )
+
+    def test_dispatch_auto(self):
+        p = self._patches()
+        with p[0] as auto, p[1] as fix, p[2] as region, p[3] as fav:
+            self.ml.set_routing_mode("auto")
+            auto.assert_called_once_with()
+            fix.assert_not_called()
+            region.assert_not_called()
+            fav.assert_not_called()
+
+    def test_dispatch_fixed_ip_with_selector(self):
+        p = self._patches()
+        with p[0] as auto, p[1] as fix, p[2] as region, p[3] as fav:
+            self.ml.set_routing_mode("fix", "3")
+            fix.assert_called_once_with("3")
+            auto.assert_not_called()
+
+    def test_dispatch_fixed_region_with_country(self):
+        p = self._patches()
+        with p[0] as auto, p[1] as fix, p[2] as region, p[3] as fav:
+            self.ml.set_routing_mode("region", "JP")
+            region.assert_called_once_with("JP")
+            fav.assert_not_called()
+
+    def test_dispatch_favorites(self):
+        p = self._patches()
+        with p[0] as auto, p[1] as fix, p[2] as region, p[3] as fav:
+            self.ml.set_routing_mode("fav")
+            fav.assert_called_once_with()
+            region.assert_not_called()
+
+    def test_dispatch_invalid_calls_nothing(self):
+        p = self._patches()
+        with p[0] as auto, p[1] as fix, p[2] as region, p[3] as fav:
+            self.ml.set_routing_mode("bogus")
+            auto.assert_not_called()
+            fix.assert_not_called()
+            region.assert_not_called()
+            fav.assert_not_called()
 
 
 if __name__ == "__main__":
