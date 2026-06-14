@@ -1546,8 +1546,13 @@ def main():
             switch_node()
         elif cmd == "iptype":
             set_iptype(sys.argv[2] if len(sys.argv) > 2 else None)
+        elif cmd == "mode":
+            set_routing_mode(
+                sys.argv[2] if len(sys.argv) > 2 else None,
+                sys.argv[3] if len(sys.argv) > 3 else None,
+            )
         else:
-            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password, nodes, refresh, current, fix, auto, switch, iptype")
+            print("未知命令。可用命令: start, stop, restart, status, logs, update, uninstall, web, port, password, nodes, refresh, current, fix, auto, switch, iptype, mode")
         sys.exit(0)
         
     options = {
@@ -1567,11 +1572,12 @@ def main():
         's': ("切换到最佳节点 (ml switch)", switch_node),
         't': ("IP出站类型过滤 (ml iptype)", set_iptype),
         'a': ("自动切换模式 (ml auto)", auto_mode),
+        'm': ("路由模式切换 (ml mode)", set_routing_mode),
         '0': ("退出终端", None)
     }
     # 菜单分组显示顺序(服务管理 / 节点管理)
     service_keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
-    node_keys = ['n', 'r', 'c', 'f', 's', 't', 'a']
+    node_keys = ['n', 'r', 'c', 'f', 's', 't', 'a', 'm']
     
     # Enter alternate buffer and hide cursor
     print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
