@@ -107,6 +107,9 @@ def bounded_int(value: Any, default: int, min_value: int | None = None, max_valu
 # 通过 proxy.vlato.site 反代拉取官方 API,规避 www.vpngate.net 被 DNS 污染/封锁的问题
 # 反代格式: /proxy/{目标URL},返回内容与官方 API 完全一致
 API_URL = "https://proxy.vlato.site/proxy/https://www.vpngate.net/api/iphone/"
+OFFICIAL_API_URL = "https://www.vpngate.net/api/iphone/"
+API_CONNECT_TIMEOUT_SECONDS = env_int("API_CONNECT_TIMEOUT_SECONDS", 8, 1, 60)
+API_FETCH_TIMEOUT_SECONDS = env_int("API_FETCH_TIMEOUT_SECONDS", 45, 5, 300)
 FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 1260, 1)
 CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 1260, 1)
 TARGET_VALID_NODES = env_int("TARGET_VALID_NODES", 3, 1)
@@ -485,6 +488,190 @@ def read_socks5_connect_reply(sock: socket.socket) -> None:
 def format_host_port(host: str, port: int) -> str:
     return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
 
+def set_response_read_timeout(response: Any, timeout: float) -> None:
+    sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+    if sock is None:
+        return
+    try:
+        sock.settimeout(timeout)
+    except Exception:
+        pass
+
+def note_partial_api_response(url: str, size: int, via: str = "API 响应") -> None:
+    msg = f"{via}读取超时，使用已收到的部分数据 ({size} bytes): {url}"
+    print(f"[fetch_api_text] {msg}", flush=True)
+    log_to_json("WARNING", "Main", msg)
+
+def read_api_response_text(response: Any, url: str) -> str:
+    chunks: list[bytes] = []
+    timed_out = False
+    deadline = time.monotonic() + API_FETCH_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if not chunks:
+                raise TimeoutError(f"API response timed out before data: {url}")
+            timed_out = True
+            break
+        set_response_read_timeout(response, min(5.0, max(0.5, remaining)))
+        try:
+            chunk = response.read(64 * 1024)
+        except (TimeoutError, socket.timeout):
+            if not chunks:
+                raise
+            timed_out = True
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+
+    data = b"".join(chunks)
+    if timed_out:
+        note_partial_api_response(url, len(data))
+    return data.decode("utf-8", errors="replace")
+
+def decode_http_response_text(response_data: bytes, url: str, timed_out: bool = False, via: str = "API 响应") -> str:
+    header_end = response_data.find(b"\r\n\r\n")
+    if header_end == -1:
+        raise RuntimeError("Invalid HTTP response format")
+
+    headers_part = response_data[:header_end].decode("utf-8", errors="replace")
+    body_part = response_data[header_end + 4:]
+
+    lines = headers_part.splitlines()
+    if not lines:
+        raise RuntimeError("Empty response headers")
+    status_line = lines[0]
+    status_parts = status_line.split()
+    if len(status_parts) >= 2:
+        try:
+            status_code = int(status_parts[1])
+            if status_code != 200:
+                raise RuntimeError(f"HTTP Server returned status {status_code}: {status_line}")
+        except ValueError:
+            pass
+
+    is_chunked = False
+    for line in lines[1:]:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            if k.strip().lower() == "transfer-encoding" and "chunked" in v.lower():
+                is_chunked = True
+                break
+
+    if is_chunked:
+        decoded = b""
+        idx = 0
+        while idx < len(body_part):
+            c_end = body_part.find(b"\r\n", idx)
+            if c_end == -1:
+                break
+            chunk_size_str = body_part[idx:c_end].split(b";")[0].strip()
+            try:
+                chunk_size = int(chunk_size_str, 16)
+            except ValueError:
+                break
+            if chunk_size == 0:
+                break
+            idx = c_end + 2
+            decoded += body_part[idx : idx + chunk_size]
+            idx += chunk_size + 2
+        body_part = decoded
+
+    if timed_out:
+        note_partial_api_response(url, len(body_part), via)
+    return body_part.decode("utf-8", errors="replace")
+
+def recv_http_response_text(sock: socket.socket, url: str, via: str = "API 响应") -> str:
+    response_data = b""
+    timed_out = False
+    deadline = time.monotonic() + API_FETCH_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if not response_data:
+                raise TimeoutError(f"API response timed out before data: {url}")
+            timed_out = True
+            break
+        sock.settimeout(min(5.0, max(0.5, remaining)))
+        try:
+            chunk = sock.recv(64 * 1024)
+        except (TimeoutError, socket.timeout):
+            if not response_data:
+                raise
+            timed_out = True
+            break
+        if not chunk:
+            break
+        response_data += chunk
+        if len(response_data) > 10 * 1024 * 1024:
+            break
+    return decode_http_response_text(response_data, url, timed_out, via)
+
+def connect_direct_tcp(host: str, port: int) -> socket.socket:
+    infos = _orig_getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    unique_infos = []
+    seen = set()
+    for info in infos:
+        key = (info[0], info[4])
+        if key not in seen:
+            unique_infos.append(info)
+            seen.add(key)
+    unique_infos.sort(key=lambda item: 0 if item[0] == socket.AF_INET else 1)
+
+    last_exc: Exception | None = None
+    for af, socktype, proto, _, sockaddr in unique_infos:
+        s = None
+        try:
+            s = socket.socket(af, socktype, proto)
+            s.settimeout(API_CONNECT_TIMEOUT_SECONDS)
+            s.connect(sockaddr)
+            return s
+        except Exception as exc:
+            last_exc = exc
+            if s is not None:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"No address resolved for {host}:{port}")
+
+def fetch_api_text_direct(url: str, use_ssl_verify: bool = True) -> str:
+    import ssl
+
+    parsed = urllib.parse.urlsplit(url)
+    domain = parsed.hostname or "www.vpngate.net"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    is_https = parsed.scheme == "https"
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+
+    s = None
+    try:
+        s = connect_direct_tcp(domain, port)
+        if is_https:
+            ctx = ssl.create_default_context() if use_ssl_verify else ssl._create_unverified_context()
+            s = ctx.wrap_socket(s, server_hostname=domain)
+        authority = format_host_port(domain, port) if parsed.port else domain
+        req_headers = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {authority}\r\n"
+            f"User-Agent: Mozilla/5.0 vpngate-openvpn-manager/2.0\r\n"
+            f"Accept: text/plain,*/*\r\n"
+            f"Connection: close\r\n\r\n"
+        )
+        s.sendall(req_headers.encode("utf-8"))
+        return recv_http_response_text(s, url)
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+
 def fetch_api_text_via_proxy(url: str, ptype: str, phost: str, pport: int, use_ssl_verify: bool = True) -> str:
     import socket
     import ssl
@@ -503,7 +690,7 @@ def fetch_api_text_via_proxy(url: str, ptype: str, phost: str, pport: int, use_s
     s = None
     try:
         s = socket.socket(af, socket.SOCK_STREAM)
-        s.settimeout(12)
+        s.settimeout(API_CONNECT_TIMEOUT_SECONDS)
         s.connect((phost, pport))
         proxy_user, proxy_pass = vpn_utils.get_upstream_proxy_auth()
         if ptype == "socks":
@@ -573,73 +760,13 @@ def fetch_api_text_via_proxy(url: str, ptype: str, phost: str, pport: int, use_s
         )
         s.sendall(req_headers.encode('utf-8'))
 
-        # Read response
-        response_data = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            response_data += chunk
-            if len(response_data) > 10 * 1024 * 1024: # max 10MB safety guard
-                break
+        return recv_http_response_text(s, url, "API 代理响应")
     finally:
         if s is not None:
             try:
                 s.close()
             except Exception:
                 pass
-
-    # Parse HTTP response
-    header_end = response_data.find(b"\r\n\r\n")
-    if header_end == -1:
-        raise RuntimeError("Invalid HTTP response format")
-    
-    headers_part = response_data[:header_end].decode('utf-8', errors='replace')
-    body_part = response_data[header_end+4:]
-
-    # Check for HTTP status code
-    lines = headers_part.splitlines()
-    if not lines:
-        raise RuntimeError("Empty response headers")
-    status_line = lines[0]
-    status_parts = status_line.split()
-    if len(status_parts) >= 2:
-        try:
-            status_code = int(status_parts[1])
-            if status_code != 200:
-                raise RuntimeError(f"HTTP Server returned status {status_code}: {status_line}")
-        except ValueError:
-            pass
-
-    # Handle chunked transfer encoding
-    is_chunked = False
-    for line in lines[1:]:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            if k.strip().lower() == "transfer-encoding" and "chunked" in v.lower():
-                is_chunked = True
-                break
-
-    if is_chunked:
-        decoded = b""
-        idx = 0
-        while idx < len(body_part):
-            c_end = body_part.find(b"\r\n", idx)
-            if c_end == -1:
-                break
-            chunk_size_str = body_part[idx:c_end].split(b";")[0].strip()
-            try:
-                chunk_size = int(chunk_size_str, 16)
-            except ValueError:
-                break
-            if chunk_size == 0:
-                break
-            idx = c_end + 2
-            decoded += body_part[idx : idx + chunk_size]
-            idx += chunk_size + 2
-        body_part = decoded
-
-    return body_part.decode('utf-8', errors='replace')
 
 def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
     if url is None:
@@ -651,8 +778,14 @@ def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
             print(f"[fetch_api_text] 监测到上游代理 ({ptype}://{phost}:{pport})，尝试通过代理获取 API...", flush=True)
             return fetch_api_text_via_proxy(url, ptype, phost, pport, use_ssl_verify)
         except Exception as e:
-            print(f"[fetch_api_text] 通过代理获取 API 失败: {e}，尝试使用直连/默认系统代理...", flush=True)
+            print(f"[fetch_api_text] 通过代理获取 API 失败: {e}，尝试使用直连...", flush=True)
             log_to_json("WARNING", "Main", f"使用代理 {ptype}://{phost}:{pport} 获取 API 失败: {e}")
+
+    try:
+        return fetch_api_text_direct(url, use_ssl_verify)
+    except Exception as direct_exc:
+        print(f"[fetch_api_text] 直接 socket 获取 API 失败: {direct_exc}，尝试使用 urllib 兜底...", flush=True)
+        log_to_json("WARNING", "Main", f"直接 socket 获取 API 失败: {direct_exc}")
 
     request = urllib.request.Request(
         url,
@@ -664,11 +797,11 @@ def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
     if url.startswith("https://") and not use_ssl_verify:
         import ssl
         ctx = ssl._create_unverified_context()
-        with urllib.request.urlopen(request, timeout=12, context=ctx) as response:
-            return response.read().decode("utf-8", errors="replace")
+        with urllib.request.urlopen(request, timeout=API_CONNECT_TIMEOUT_SECONDS, context=ctx) as response:
+            return read_api_response_text(response, url)
     else:
-        with urllib.request.urlopen(request, timeout=12) as response:
-            return response.read().decode("utf-8", errors="replace")
+        with urllib.request.urlopen(request, timeout=API_CONNECT_TIMEOUT_SECONDS) as response:
+            return read_api_response_text(response, url)
 
 def parse_vpngate_rows(text: str) -> list[dict[str, str]]:
     lines = [line for line in text.splitlines() if line and not line.startswith("*")]
@@ -761,14 +894,16 @@ def fetch_candidates() -> list[dict[str, Any]]:
     has_cache = len(cached_nodes()) > 0
     max_attempts = 1 if has_cache else 2
     
-    # 尝试 URLs 队列: 1. HTTPS(验证证书) 2. HTTPS(不验证证书) 3. HTTP
-    attempts_targets = [
-        (API_URL, True),
-        (API_URL, False)
-    ]
-    if API_URL.startswith("https://"):
-        # 仅降级外层协议(反代地址),内层目标 URL 的 https:// 保持不变,故限制只替换一次
-        attempts_targets.append((API_URL.replace("https://", "http://", 1), True))
+    # 尝试 URLs 队列:优先反代,失败后再尝试官方直连。
+    attempts_targets: list[tuple[str, bool]] = []
+    for base_url in [API_URL, OFFICIAL_API_URL]:
+        if any(existing_url == base_url and verify is True for existing_url, verify in attempts_targets):
+            continue
+        attempts_targets.append((base_url, True))
+        if base_url.startswith("https://"):
+            attempts_targets.append((base_url, False))
+            # 仅降级外层协议(反代地址),内层目标 URL 的 https:// 保持不变,故限制只替换一次
+            attempts_targets.append((base_url.replace("https://", "http://", 1), True))
         
     log_to_json("INFO", "Main", "开始拉取官方 API 节点列表...")
     
