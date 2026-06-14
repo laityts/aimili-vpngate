@@ -1623,7 +1623,7 @@ def main():
                 need_redraw = True
                 continue
 
-            # 字母键归一化为小写,便于匹配 n/r/c/f/a(不影响转义序列与控制字符)
+            # 字母键归一化为小写,便于匹配 n/r/c/f/s/t/a/m(不影响转义序列与控制字符)
             if len(key) == 1 and key.isalpha():
                 key = key.lower()
 
