@@ -703,6 +703,79 @@ def _resolve_country(sel, countries):
             return c["name"]
     return None
 
+def _set_fixed_region(country=None):
+    yellow = "\033[1;33m"; green = "\033[1;32m"; reset = "\033[0m"
+    nodes = sorted_nodes()
+    if not nodes:
+        print("当前无节点缓存，无法设置固定地区。请先运行 'ml refresh' 拉取节点。")
+        return
+    countries = _collect_countries(nodes)
+    if not countries:
+        print("当前缓存节点均无国家信息,无法设置固定地区。请先运行 'ml refresh' 重新拉取。")
+        return
+    if country is None or not str(country).strip():
+        print("=======================================================")
+        print("               固定地区 - 选择国家")
+        print("=======================================================")
+        for i, c in enumerate(countries, 1):
+            print(f"  [{i}] {c['name']} ({c['count']}个节点)")
+        print("=======================================================")
+        try:
+            country = input("请输入要锁定的国家【序号】或国家名/两位代码(直接回车取消): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消。")
+            return
+        if not country:
+            print("已取消。")
+            return
+    name = _resolve_country(country, countries)
+    if name is None:
+        print(f"未找到匹配的国家: {country}。可选国家如下:")
+        for i, c in enumerate(countries, 1):
+            print(f"  [{i}] {c['name']} ({c['count']}个节点)")
+        return
+    cfg = load_ui_auth()
+    was_disabled = not cfg.get("connection_enabled", True)
+    cfg["routing_mode"] = "fixed_region"
+    cfg["force_country"] = name
+    cfg["connection_enabled"] = True
+    cfg.pop("fixed_node_id", None)
+    try:
+        save_ui_auth(cfg)
+    except Exception as e:
+        print(f"写入配置失败: {e}")
+        return
+    cnt = next((c["count"] for c in countries if c["name"] == name), 0)
+    print(f"已切换到「固定地区: {green}{name}{reset}」(该国家缓存中有 {cnt} 个节点)。")
+    if was_disabled:
+        print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
+    restart_service()
+    print("配置已生效，服务正在重启并优先在该地区的缓存可用节点中连接。可运行 'ml current' 查看状态。")
+    print(f"{yellow}说明: 若该地区当前无可用缓存节点,后端会自动拉取补齐;有可用节点时则直接复用,不重新拉取。{reset}")
+
+def _set_favorites():
+    yellow = "\033[1;33m"; green = "\033[1;32m"; reset = "\033[0m"
+    cfg = load_ui_auth()
+    fav_ids = cfg.get("favorite_node_ids", []) or []
+    if not fav_ids:
+        print("当前没有任何收藏节点,无法启用收藏优先模式。")
+        print(f"{yellow}请先在 Web 面板收藏节点后再试(CLI 暂不管理收藏)。{reset}")
+        return
+    was_disabled = not cfg.get("connection_enabled", True)
+    cfg["routing_mode"] = "favorites"
+    cfg["connection_enabled"] = True
+    cfg.pop("fixed_node_id", None)
+    try:
+        save_ui_auth(cfg)
+    except Exception as e:
+        print(f"写入配置失败: {e}")
+        return
+    print(f"已切换到「{green}收藏优先{reset}」模式(当前收藏 {len(fav_ids)} 个节点)。")
+    if was_disabled:
+        print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
+    restart_service()
+    print("配置已生效，服务正在重启并优先在收藏节点中连接。可运行 'ml current' 查看状态。")
+
 def ping_ip(ip):
     if not ip:
         return None
