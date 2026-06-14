@@ -31,13 +31,17 @@ def load_ml_module():
     tmp.close()
     spec = importlib.util.spec_from_file_location("ml_cli", tmp.name)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        os.unlink(tmp.name)
     return mod
 
 
 class TestNormalizeRoutingMode(unittest.TestCase):
-    def setUp(self):
-        self.ml = load_ml_module()
+    @classmethod
+    def setUpClass(cls):
+        cls.ml = load_ml_module()
 
     def test_full_names(self):
         n = self.ml._normalize_routing_mode
