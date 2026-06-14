@@ -1604,7 +1604,7 @@ def main():
                 print_line(f"  {green}[0]{reset} {options['0'][0]}")
                 print_line("=======================================================")
                 print_line("提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态。")
-                print("请直接输入数字键 [0-9] 或字母键 [n/r/c/f/s/t/a] 快速选择执行：\033[K", end="", flush=True)
+                print("请直接输入数字键 [0-9] 或字母键 [n/r/c/f/s/t/a/m] 快速选择执行：\033[K", end="", flush=True)
                 print("\033[J", end="", flush=True)
                 need_redraw = False
                 
