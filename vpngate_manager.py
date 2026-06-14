@@ -129,6 +129,13 @@ STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
 UPSTREAM_PROXY_AUTH_FILE = DATA_DIR / "upstream_proxy_auth.txt"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
+# 强制刷新标记:由 `ml refresh`(经重启服务)写入,内容为写入时的 Unix 时间戳;collector_loop
+# 首轮检测到新鲜标记后本轮强制重新拉取节点;缺失时(ml switch/auto/fix 及普通重启)优先复用缓存中
+# 的可用节点,不做不必要的拉取。web "更新节点" 走 /api/refresh_nodes 直接后台拉取(即时反馈),不经此标记。
+FORCE_REFRESH_FLAG = DATA_DIR / "force_refresh.flag"
+# 标记最长有效期:正常 ml refresh→重启→首轮消费通常在数十秒内完成;超过此阈值仍未被消费的标记
+# 视为陈旧(如 restart 失败/未真正重启导致残留)直接丢弃,避免日后某次无关重启误触发强制拉取。
+FORCE_REFRESH_MAX_AGE_SECONDS = 300
 
 lock = threading.RLock()
 maintenance_lock = threading.Lock()
@@ -1382,6 +1389,36 @@ def test_multiple_nodes(node_ids: list[str], progress_cb=None) -> list[dict[str,
         
     return list(updated_nodes_map.values())
 
+def _select_available_candidates(nodes: list[dict[str, Any]], ui_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    # 在当前路由模式下,从缓存节点里筛选并按延迟升序/评分降序排序"可直接连接"的可用节点。
+    # 与 auto_switch_node 的候选口径完全一致:供其与"重连前是否需要拉取"的判定共用,避免两处口径漂移。
+    routing_mode = ui_cfg.get("routing_mode", "auto")
+    target_country = ui_cfg.get("force_country", "")
+    candidates = [
+        n for n in nodes
+        if n.get("probe_status") == "available" and not n.get("active")
+    ]
+    if routing_mode == "fixed_region" and target_country:
+        candidates = [
+            n for n in candidates
+            if n.get("country") == target_country
+            or vpn_utils.COUNTRY_TRANSLATIONS.get(n.get("country", ""), n.get("country", "")) == target_country
+        ]
+    if routing_mode == "favorites":
+        fav_ids = set(ui_cfg.get("favorite_node_ids", []))
+        fav_candidates = [n for n in candidates if n.get("id") in fav_ids]
+        if fav_candidates:
+            candidates = fav_candidates
+        elif not ui_cfg.get("fav_fail_fallback", True):
+            candidates = []
+    routing_ip_type = ui_cfg.get("routing_ip_type", "all")
+    if routing_ip_type == "residential":
+        candidates = [n for n in candidates if n.get("ip_type") in ("residential", "mobile")]
+    elif routing_ip_type == "hosting":
+        candidates = [n for n in candidates if n.get("ip_type") == "hosting"]
+    candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+    return candidates
+
 def auto_switch_node(attempt: int = 0) -> None:
     if attempt >= 3:
         print("[自动切换] 连续切换失败已达 3 次，停止切换以防止主线程死锁，将在后台重新加载节点...", flush=True)
@@ -1403,37 +1440,8 @@ def auto_switch_node(attempt: int = 0) -> None:
     # Find the next best available node
     with lock:
         nodes = read_nodes()
-        candidates = [
-            n for n in nodes 
-            if n.get("probe_status") == "available" 
-            and not n.get("active")
-        ]
-        
-        if routing_mode == "fixed_region" and target_country:
-            candidates = [
-                n for n in candidates 
-                if n.get("country") == target_country 
-                or vpn_utils.COUNTRY_TRANSLATIONS.get(n.get("country", ""), n.get("country", "")) == target_country
-            ]
-        if routing_mode == "favorites":
-            fav_ids = set(ui_cfg.get("favorite_node_ids", []))
-            fav_candidates = [n for n in candidates if n.get("id") in fav_ids]
-            if fav_candidates:
-                candidates = fav_candidates
-            else:
-                fav_fail_fallback = ui_cfg.get("fav_fail_fallback", True)
-                if not fav_fail_fallback:
-                    candidates = []
-            
-        # Apply routing_ip_type filter
-        routing_ip_type = ui_cfg.get("routing_ip_type", "all")
-        if routing_ip_type == "residential":
-            candidates = [n for n in candidates if n.get("ip_type") in ("residential", "mobile")]
-        elif routing_ip_type == "hosting":
-            candidates = [n for n in candidates if n.get("ip_type") == "hosting"]
-            
-        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
-        
+        candidates = _select_available_candidates(nodes, ui_cfg)
+
     if candidates:
         next_node = candidates[0]
         msg = f"当前连接已失效或代理连通性检测失败，正在自动切换至最佳备用节点: {next_node['id']}"
@@ -1605,7 +1613,11 @@ def connect_node(node_id: str) -> str:
         with lock:
             is_connecting = False
 
-def maintain_valid_nodes(force: bool = False) -> str:
+def maintain_valid_nodes(force: bool = False, prefer_cached: bool = False) -> str:
+    # prefer_cached=True(由 collector_loop 在非强制刷新时传入):OpenVPN 未运行时,
+    # 优先用缓存中已检测可用的节点直接重连并提前返回,只有在没有任何可用缓存节点
+    # (或缓存节点连接均失败)时才落到下方的拉取+全量重测流程。这样 ml switch/auto/fix
+    # 触发的重启不会在仍有可用节点时白白拉取节点。
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
     if not maintenance_lock.acquire(blocking=False):
@@ -1633,6 +1645,31 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             except Exception as e:
                                 print(f"[维护线程] 重新拉起固定节点 {target_id} 失败: {e}", flush=True)
                             is_connecting = True
+                            # 固定节点已在缓存中且重连成功:无需再拉取节点,直接返回
+                            if prefer_cached and active_openvpn_running():
+                                return "已连接缓存中的固定节点，跳过节点拉取"
+                elif prefer_cached:
+                    # 优先复用缓存:OpenVPN 已确认未运行,nodes.json 中残留的 active 标志已失效,
+                    # 先清除以便上一轮的活动节点也能作为候选;若存在匹配当前路由的可用缓存节点,
+                    # 直接连接并返回,跳过拉取。连接全部失败时 active_openvpn_running() 仍为 False,
+                    # 会自然落到下方的拉取流程。
+                    with lock:
+                        nodes = read_nodes()
+                        cleared = False
+                        for n in nodes:
+                            if n.get("active"):
+                                n["active"] = False
+                                cleared = True
+                        if cleared:
+                            write_json(NODES_FILE, nodes)
+                        candidates = _select_available_candidates(nodes, ui_cfg)
+                    if candidates:
+                        print(f"[维护线程] 缓存中存在 {len(candidates)} 个可用节点，直接连接，跳过节点拉取", flush=True)
+                        is_connecting = False
+                        auto_switch_node()
+                        is_connecting = True
+                        if active_openvpn_running():
+                            return "已连接缓存中的可用节点，跳过节点拉取"
                 else:
                     has_active_id = False
                     with lock:
@@ -1792,6 +1829,33 @@ def maintain_valid_nodes(force: bool = False) -> str:
         maintenance_lock.release()
 
 
+def consume_force_refresh_flag() -> bool:
+    # 读取并清除强制刷新标记(由 `ml refresh` 经重启服务写入,内容为写入时的 Unix 时间戳)。
+    # 标记新鲜(写入距今未超过 FORCE_REFRESH_MAX_AGE_SECONDS)则返回 True,表示本轮应强制重新拉取;
+    # 标记陈旧(如 restart 失败导致残留)则丢弃并返回 False,避免日后某次无关重启误触发拉取。
+    # 无论新鲜与否都删除标记,确保只生效一次;内容无法解析为时间戳时按"新鲜"处理,保留用户刷新意图。
+    try:
+        if not FORCE_REFRESH_FLAG.exists():
+            return False
+        fresh = True
+        try:
+            ts = int(FORCE_REFRESH_FLAG.read_text(encoding="utf-8").strip())
+            if time.time() - ts > FORCE_REFRESH_MAX_AGE_SECONDS:
+                fresh = False
+        except Exception:
+            fresh = True
+        try:
+            FORCE_REFRESH_FLAG.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        return fresh
+    except Exception:
+        pass
+    return False
+
+
 def collector_loop() -> None:
     global last_collector_heartbeat
     while True:
@@ -1803,10 +1867,19 @@ def collector_loop() -> None:
             # background_proxy_checker 检测并触发 auto_switch_node 按需处理。
             if active_openvpn_running():
                 log_to_json("INFO", "Main", "已连接活动节点，跳过本轮周期拉取与重测。")
-            else:
-                print("[守护线程] 开始执行节点拉取与可用性检测周期任务...", flush=True)
-                log_to_json("INFO", "Main", "开始执行节点拉取与可用性检测周期任务...")
+            elif consume_force_refresh_flag():
+                # 收到 ml refresh 的显式刷新请求(经重启写入标记):强制重新拉取并检测节点。
+                print("[守护线程] 收到刷新请求，开始重新拉取并检测节点...", flush=True)
+                log_to_json("INFO", "Main", "收到刷新请求，开始重新拉取并检测节点...")
                 res = maintain_valid_nodes(force=False)
+                if "没有拉取到新节点" not in res:
+                    success = True
+                log_to_json("INFO", "Main", f"周期同步与检测任务完成，结果: {res}")
+            else:
+                # 默认优先复用缓存中的可用节点直连;只有在无可用缓存节点时才拉取。
+                print("[守护线程] 开始检查连接(优先复用缓存可用节点，无可用时才拉取)...", flush=True)
+                log_to_json("INFO", "Main", "开始检查连接，优先复用缓存可用节点。")
+                res = maintain_valid_nodes(force=False, prefer_cached=True)
                 if "没有拉取到新节点" not in res:
                     success = True
                 log_to_json("INFO", "Main", f"周期同步与检测任务完成，结果: {res}")

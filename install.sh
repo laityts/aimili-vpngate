@@ -390,7 +390,19 @@ def list_nodes(return_only=False):
     return nodes
 
 def refresh_nodes():
-    # 通过重启服务触发后端维护线程立即重新拉取并检测节点
+    # 通过重启服务触发后端维护线程立即重新拉取并检测节点。
+    # 写入强制刷新标记(内容为当前 Unix 时间戳):重启后 collector_loop 首轮检测到新鲜标记会强制
+    # 重新拉取节点,而非复用缓存(普通重启及 ml switch/auto/fix 默认复用缓存可用节点、不做不必要的拉取)。
+    # 写时间戳便于 consume 端丢弃陈旧标记:若 restart 失败/未真正重启,残留标记不会在日后某次无关重启时被误消费。
+    # 已知可接受的极低概率竞态:写标记在 restart 之前、旧守护进程仍在运行,理论上旧进程可能在被重启
+    # 杀死前的毫秒级窗口内抢先消费本标记;一旦发生,用户重跑 ml refresh 即可,无副作用。
+    flag_path = os.path.join(INSTALL_DIR, "vpngate_data", "force_refresh.flag")
+    try:
+        os.makedirs(os.path.dirname(flag_path), exist_ok=True)
+        with open(flag_path, "w", encoding="utf-8") as f:
+            f.write(str(int(time.time())))
+    except Exception:
+        pass
     print("正在触发节点重新拉取(将重启服务以让后端立即执行拉取与检测)...", flush=True)
     restart_service()
     print("已触发。后端正在后台异步拉取最新节点并逐一检测可用性，")
