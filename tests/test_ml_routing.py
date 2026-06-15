@@ -178,6 +178,30 @@ class TestSetRoutingModeDispatch(unittest.TestCase):
             fav.assert_not_called()
 
 
+class TestBestNodeSelection(unittest.TestCase):
+    def setUp(self):
+        self.ml = load_ml_module()
+
+    def test_best_node_skips_backoff_nodes(self):
+        nodes = [
+            {
+                "id": "node-a",
+                "probe_status": "available",
+                "latency_ms": 1,
+                "score": 100,
+                "unavailable_until": 9999999999,
+            },
+            {
+                "id": "node-b",
+                "probe_status": "available",
+                "latency_ms": 50,
+                "score": 1,
+            },
+        ]
+        with mock.patch.object(self.ml, "load_nodes", return_value=nodes):
+            self.assertEqual(self.ml.best_node()["id"], "node-b")
+
+
 class TestExitInfoDisplay(unittest.TestCase):
     def setUp(self):
         self.ml = load_ml_module()

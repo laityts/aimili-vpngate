@@ -871,6 +871,28 @@ def mark_blacklisted(node: dict[str, Any], message: str) -> None:
     }
     write_json(BLACKLIST_FILE, blacklist)
 
+def node_in_backoff(node: dict[str, Any], now: float | None = None) -> bool:
+    if now is None:
+        now = time.time()
+    try:
+        until = float(node.get("unavailable_until", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return until > now
+
+def mark_node_unavailable(node: dict[str, Any], message: str) -> None:
+    now = time.time()
+    node["probe_status"] = "unavailable"
+    node["probe_message"] = message
+    node["probed_at"] = now
+    node["last_failed_at"] = now
+    node["unavailable_until"] = now + INVALID_BACKOFF_SECONDS
+    mark_blacklisted(node, message)
+
+def clear_node_backoff(node: dict[str, Any]) -> None:
+    node["last_failed_at"] = 0
+    node["unavailable_until"] = 0
+
 def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     ip = row.get("IP", "")
     country_short = row.get("CountryShort", "")
@@ -906,6 +928,8 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
         "probe_status": "not_checked",
         "probe_message": "",
         "probed_at": 0,
+        "last_failed_at": 0,
+        "unavailable_until": 0,
     }
 
 def fetch_candidates() -> list[dict[str, Any]]:
@@ -1421,6 +1445,7 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             node["probe_message"] = message
             node["probed_at"] = time.time()
             if ok:
+                clear_node_backoff(node)
                 node["owner"] = temp_node["owner"]
                 node["asn"] = temp_node["asn"]
                 node["as_name"] = temp_node["as_name"]
@@ -1542,6 +1567,8 @@ def test_multiple_nodes(node_ids: list[str], progress_cb=None) -> list[dict[str,
             nid = n.get("id")
             if nid in updated_nodes_map:
                 n.update(updated_nodes_map[nid])
+                if n.get("probe_status") == "available":
+                    clear_node_backoff(n)
         sorted_nodes = sort_all_nodes(current_nodes)
         write_json(NODES_FILE, sorted_nodes)
         
@@ -1554,7 +1581,7 @@ def _select_available_candidates(nodes: list[dict[str, Any]], ui_cfg: dict[str, 
     target_country = ui_cfg.get("force_country", "")
     candidates = [
         n for n in nodes
-        if n.get("probe_status") == "available" and not n.get("active")
+        if n.get("probe_status") == "available" and not n.get("active") and not node_in_backoff(n)
     ]
     if routing_mode == "fixed_region" and target_country:
         candidates = [
@@ -1582,7 +1609,9 @@ def _has_available_node_for_current_route(nodes: list[dict[str, Any]], ui_cfg: d
     if routing_mode == "fixed_ip":
         fixed_node_id = str(ui_cfg.get("fixed_node_id") or "").strip()
         return bool(fixed_node_id and any(
-            n.get("id") == fixed_node_id and n.get("probe_status") == "available"
+            n.get("id") == fixed_node_id
+            and n.get("probe_status") == "available"
+            and not node_in_backoff(n)
             for n in nodes
         ))
     return bool(_select_available_candidates(nodes, ui_cfg))
@@ -1709,8 +1738,7 @@ def connect_node(node_id: str) -> str:
                     config_path.unlink()
             except Exception:
                 pass
-            node["probe_status"] = "unavailable"
-            node["probe_message"] = message
+            mark_node_unavailable(node, message)
             for item in nodes:
                 item["active"] = False
             write_json(NODES_FILE, nodes)
@@ -1746,6 +1774,7 @@ def connect_node(node_id: str) -> str:
         for item in nodes:
             item["active"] = item.get("id") == node_id
             if item["active"]:
+                clear_node_backoff(item)
                 _ph = f"[{LOCAL_PROXY_HOST}]" if ":" in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST
                 item["probe_message"] = f"Active node. HTTP proxy: http://{_ph}:{LOCAL_PROXY_PORT}"
         write_json(NODES_FILE, nodes)
@@ -1804,7 +1833,8 @@ def maintain_valid_nodes(force: bool = False, prefer_cached: bool = False) -> st
                     target_id = active_openvpn_node_id or ui_cfg.get("fixed_node_id", "")
                     if target_id:
                         nodes = read_nodes()
-                        if any(n.get("id") == target_id for n in nodes):
+                        fixed_node = next((n for n in nodes if n.get("id") == target_id), None)
+                        if fixed_node and not node_in_backoff(fixed_node):
                             print(f"[维护线程] 检测到固定 IP 模式下 OpenVPN 未运行，正在重新拉起同一节点: {target_id}", flush=True)
                             is_connecting = False
                             try:
@@ -1815,6 +1845,12 @@ def maintain_valid_nodes(force: bool = False, prefer_cached: bool = False) -> st
                             # 固定节点已在缓存中且重连成功:无需再拉取节点,直接返回
                             if prefer_cached and active_openvpn_running():
                                 return "已连接缓存中的固定节点，跳过节点拉取"
+                        elif fixed_node:
+                            set_state(
+                                is_connecting=False,
+                                connecting_phase="",
+                                last_check_message=f"固定节点 {target_id} 正在失败退避期内，暂不重复重连",
+                            )
                 elif prefer_cached:
                     # 优先复用缓存:OpenVPN 已确认未运行,nodes.json 中残留的 active 标志已失效,
                     # 先清除以便上一轮的活动节点也能作为候选;若存在匹配当前路由的可用缓存节点,
@@ -1970,29 +2006,7 @@ def maintain_valid_nodes(force: bool = False, prefer_cached: bool = False) -> st
                     target_country = ui_cfg.get("force_country", "")
                     
                     if routing_mode != "fixed_ip":
-                        available_candidates = [n for n in merged if n.get("probe_status") == "available"]
-                        if routing_mode == "fixed_region" and target_country:
-                            available_candidates = [
-                                n for n in available_candidates 
-                                if n.get("country") == target_country 
-                                or vpn_utils.COUNTRY_TRANSLATIONS.get(n.get("country", ""), n.get("country", "")) == target_country
-                            ]
-                        elif routing_mode == "favorites":
-                            fav_ids = set(ui_cfg.get("favorite_node_ids", []))
-                            fav_candidates = [n for n in available_candidates if n.get("id") in fav_ids]
-                            if fav_candidates:
-                                available_candidates = fav_candidates
-                            else:
-                                fav_fail_fallback = ui_cfg.get("fav_fail_fallback", True)
-                                if not fav_fail_fallback:
-                                    available_candidates = []
-                        
-                        # Apply routing_ip_type filter for auto-connect
-                        routing_ip_type = ui_cfg.get("routing_ip_type", "all")
-                        if routing_ip_type == "residential":
-                            available_candidates = [n for n in available_candidates if n.get("ip_type") in ("residential", "mobile")]
-                        elif routing_ip_type == "hosting":
-                            available_candidates = [n for n in available_candidates if n.get("ip_type") == "hosting"]
+                        available_candidates = _select_available_candidates(merged, ui_cfg)
                         
                         if available_candidates:
                             auto_switch_node()
@@ -5488,8 +5502,7 @@ def background_proxy_checker() -> None:
                             nodes = read_nodes()
                             active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
                             if active_node:
-                                mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
-                                active_node["probe_status"] = "unavailable"
+                                mark_node_unavailable(active_node, f"代理连通性检测失败: {error_msg}")
                                 write_json(NODES_FILE, nodes)
                         auto_switch_node()
                     else:

@@ -299,6 +299,12 @@ def _node_latency(n):
         v = 0
     return v if v > 0 else 999999
 
+def _node_in_backoff(n):
+    try:
+        return float(n.get("unavailable_until") or 0) > time.time()
+    except Exception:
+        return False
+
 def sorted_nodes():
     # 活动节点优先,其次按延迟升序、评分降序;与后端 auto_switch_node 排序口径一致
     nodes = load_nodes()
@@ -646,7 +652,7 @@ def auto_mode():
 
 def best_node(ip_type="all"):
     # 最佳节点:可用节点按延迟升序、评分降序;按 routing_ip_type 过滤以对齐后端 auto_switch_node 候选口径
-    avail = [n for n in load_nodes() if n.get("probe_status") == "available"]
+    avail = [n for n in load_nodes() if n.get("probe_status") == "available" and not _node_in_backoff(n)]
     if ip_type == "residential":
         avail = [n for n in avail if n.get("ip_type") in ("residential", "mobile")]
     elif ip_type == "hosting":

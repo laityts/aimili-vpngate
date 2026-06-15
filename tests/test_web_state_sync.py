@@ -115,6 +115,65 @@ class TestWebStateSync(unittest.TestCase):
             {"routing_mode": "auto", "routing_ip_type": "residential"},
         ))
 
+    def test_available_candidates_skip_backoff_nodes(self):
+        nodes = [
+            {
+                "id": "node-a",
+                "probe_status": "available",
+                "latency_ms": 1,
+                "unavailable_until": 9999999999,
+                "active": False,
+            },
+            {
+                "id": "node-b",
+                "probe_status": "available",
+                "latency_ms": 50,
+                "active": False,
+            },
+        ]
+
+        candidates = self.manager._select_available_candidates(
+            nodes,
+            {"routing_mode": "auto", "routing_ip_type": "all"},
+        )
+
+        self.assertEqual([n["id"] for n in candidates], ["node-b"])
+
+    def test_fixed_ip_availability_skips_backoff_node(self):
+        nodes = [
+            {
+                "id": "node-a",
+                "probe_status": "available",
+                "unavailable_until": 9999999999,
+                "active": False,
+            }
+        ]
+
+        self.assertFalse(self.manager._has_available_node_for_current_route(
+            nodes,
+            {"routing_mode": "fixed_ip", "fixed_node_id": "node-a"},
+        ))
+
+    def test_mark_node_unavailable_sets_backoff(self):
+        node = {"id": "node-a", "ip": "203.0.113.1"}
+
+        self.manager.mark_node_unavailable(node, "connect timeout")
+
+        self.assertEqual(node["probe_status"], "unavailable")
+        self.assertEqual(node["probe_message"], "connect timeout")
+        self.assertTrue(node["last_failed_at"] > 0)
+        self.assertTrue(node["unavailable_until"] > node["last_failed_at"])
+        self.assertTrue(self.manager.node_in_backoff(node))
+
+    def test_clear_node_backoff_resets_backoff_fields(self):
+        node = {"id": "node-a", "last_failed_at": 123, "unavailable_until": 9999999999}
+
+        self.manager.clear_node_backoff(node)
+
+        self.assertEqual(node["last_failed_at"], 0)
+        self.assertEqual(node["unavailable_until"], 0)
+        self.assertFalse(self.manager.node_in_backoff(node))
+
 
 if __name__ == "__main__":
     unittest.main()
