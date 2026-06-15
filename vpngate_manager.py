@@ -3906,6 +3906,24 @@ const base=p=>(p||"").split(/[\\/]/).pop();
 function time(ts){return ts?new Date(ts*1000).toLocaleString():"从未"}
 function speed(v){return v?`${(v*8/1000/1000).toFixed(1)} Mbps`:"-"}
 
+async function fetchJsonOrReload(url, options) {
+  const res = await fetch(url, options);
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (e) {
+    data = {};
+  }
+  if (res.status === 401 || data.error === "Unauthorized") {
+    window.location.reload();
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
 const translateQuality = q => {
   const dict = {"normal": "普通", "proxy": "代理", "datacenter": "数据中心", "mobile": "移动端"};
   return dict[q] || q || "-";
@@ -4440,8 +4458,7 @@ function startConnectionPolling() {
   if (pollInterval) clearInterval(pollInterval);
   pollInterval = setInterval(async () => {
     try {
-      const resp = await fetch("./api/nodes");
-      const data = await resp.json();
+      const data = await fetchJsonOrReload("./api/nodes");
       nodes = Array.isArray(data.nodes) ? data.nodes : [];
       state = data.state || {};
       stableSortNodes();
@@ -4524,10 +4541,9 @@ async function disconnectNode(){
 
 
 async function load(){
-  const r=await fetch("./api/nodes"); 
-  const d=await r.json(); 
-  nodes=Array.isArray(d.nodes) ? d.nodes : []; 
-  state=d.state||{}; 
+  const d = await fetchJsonOrReload("./api/nodes");
+  nodes=Array.isArray(d.nodes) ? d.nodes : [];
+  state=d.state||{};
   
   stableSortNodes();
   updateCountryFilter();
@@ -5075,8 +5091,7 @@ setInterval(async () => {
   const bgTask = typeof state !== "undefined" && (state.connecting_phase === "scanning" || state.connecting_phase === "fetching");
   if (typeof state !== "undefined" && (!state.is_connecting || bgTask) && (!testingNodeIds || !testingNodeIds.size) && document.visibilityState === "visible") {
     try {
-      const r = await fetch("./api/nodes");
-      const d = await r.json();
+      const d = await fetchJsonOrReload("./api/nodes");
       nodes = d.nodes || [];
       state = d.state || {};
       stableSortNodes();
@@ -5105,14 +5120,25 @@ function closeGatewayModal() {
 
 async function loadGatewayStatus() {
   try {
-    const res = await fetch("./api/gateway_status");
-    const data = await res.json();
+    const data = await fetchJsonOrReload("./api/gateway_status");
     if (data.ok && data.services) {
       renderGatewayServices(data.services);
+    } else {
+      renderGatewayError(data.error || "网关状态接口返回异常");
     }
   } catch (e) {
     console.error("加载网关状态失败", e);
+    renderGatewayError(e.message || "网关状态加载失败");
   }
+}
+
+function renderGatewayError(message) {
+  const container = $("gateway_services_list");
+  if (!container) return;
+  container.innerHTML = `
+    <div style="font-size: 13px; color: var(--danger); background: rgba(244,63,94,0.08); border: 1px solid rgba(244,63,94,0.15); border-radius: 8px; padding: 12px; line-height: 1.5;">
+      网关状态加载失败：${esc(message)}。请刷新页面并重新登录后再试。
+    </div>`;
 }
 
 function renderGatewayServices(services) {
@@ -5121,9 +5147,11 @@ function renderGatewayServices(services) {
   
   let html = "";
   services.forEach(s => {
-    const statusText = s.status === "running" ? "正在运行" : "已停止";
-    const badgeClass = s.status === "running" ? "available" : "unavailable";
-    const statusPulse = s.status === "running" ? '<span class="badge-pulse"></span>' : '';
+    const statusTextMap = {running: "正在运行", working: "处理中", stopped: "已停止"};
+    const badgeClassMap = {running: "available", working: "not_checked", stopped: "unavailable"};
+    const statusText = statusTextMap[s.status] || s.status || "未知";
+    const badgeClass = badgeClassMap[s.status] || "not_checked";
+    const statusPulse = s.status === "running" || s.status === "working" ? '<span class="badge-pulse"></span>' : '';
     
     html += `
       <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px;">
@@ -5506,6 +5534,10 @@ class Handler(BaseHTTPRequestHandler):
             exp_time = active_sessions.get(session_token)
             if exp_time is not None and exp_time > time.time():
                 return True
+            expected_token = get_session_token(pwd, ui_cfg.get("username", "admin"))
+            if session_token == expected_token:
+                active_sessions[session_token] = time.time() + 30 * 24 * 3600
+                return True
         return False
 
     def validate_path(self) -> str:
@@ -5661,21 +5693,35 @@ class Handler(BaseHTTPRequestHandler):
                 "error": proxy_err
             }
             effective_active_id = get_effective_active_node_id()
+            state = get_state()
             ovpn_ok = active_openvpn_running()
             ovpn_err = ""
             ovpn_details = "未连接"
+            ovpn_status_value = "running" if ovpn_ok else "stopped"
             if ovpn_ok:
                 ovpn_details = f"已连接节点: {effective_active_id or active_openvpn_node_id}"
                 if sys.platform.startswith("linux"):
                     if not Path("/sys/class/net/tun0").exists():
                         ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
+            elif state.get("is_connecting"):
+                ovpn_status_value = "working"
+                phase = state.get("connecting_phase", "")
+                if phase == "fetching":
+                    ovpn_details = state.get("last_check_message") or "正在拉取最新的免费 VPN 节点列表..."
+                elif phase == "scanning":
+                    done = parse_int(state.get("scan_done"))
+                    total = parse_int(state.get("scan_total"))
+                    available = parse_int(state.get("scan_available"))
+                    ovpn_details = state.get("last_check_message") or f"正在检测节点可用性 ({done}/{total})，已发现 {available} 个可用节点..."
+                else:
+                    ovpn_details = state.get("last_check_message") or state.get("active_node_latency") or "正在建立 VPN 连接..."
             else:
                 if effective_active_id:
                     ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
                     ovpn_details = f"尝试连接节点 {effective_active_id} 失败"
             openvpn_status = {
                 "name": "OpenVPN 核心连接",
-                "status": "running" if ovpn_ok else "stopped",
+                "status": ovpn_status_value,
                 "details": ovpn_details,
                 "error": ovpn_err
             }
@@ -5750,7 +5796,7 @@ class Handler(BaseHTTPRequestHandler):
                 expected_uname = ui_cfg.get("username", "admin")
                 
                 if expected_pwd and input_pwd == expected_pwd and input_uname == expected_uname:
-                    token = uuid.uuid4().hex
+                    token = get_session_token(expected_pwd, expected_uname)
                     with lock:
                         active_sessions[token] = time.time() + 30 * 24 * 3600
                     body = json.dumps({"ok": True}).encode("utf-8")
