@@ -86,6 +86,35 @@ class TestWebStateSync(unittest.TestCase):
 
         self.assertEqual(state["active_openvpn_node_id"], "node-b")
 
+    def test_available_node_for_auto_route(self):
+        nodes = [{"id": "node-a", "probe_status": "available", "active": False}]
+        ui_cfg = {"routing_mode": "auto", "routing_ip_type": "all"}
+
+        self.assertTrue(self.manager._has_available_node_for_current_route(nodes, ui_cfg))
+
+    def test_available_node_for_fixed_ip_requires_fixed_node(self):
+        nodes = [
+            {"id": "node-a", "probe_status": "available", "active": False},
+            {"id": "node-b", "probe_status": "unavailable", "active": False},
+        ]
+
+        self.assertTrue(self.manager._has_available_node_for_current_route(
+            nodes,
+            {"routing_mode": "fixed_ip", "fixed_node_id": "node-a"},
+        ))
+        self.assertFalse(self.manager._has_available_node_for_current_route(
+            nodes,
+            {"routing_mode": "fixed_ip", "fixed_node_id": "node-b"},
+        ))
+
+    def test_available_node_for_route_respects_ip_type_filter(self):
+        nodes = [{"id": "node-a", "probe_status": "available", "ip_type": "hosting", "active": False}]
+
+        self.assertFalse(self.manager._has_available_node_for_current_route(
+            nodes,
+            {"routing_mode": "auto", "routing_ip_type": "residential"},
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

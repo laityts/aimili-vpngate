@@ -1578,6 +1578,16 @@ def _select_available_candidates(nodes: list[dict[str, Any]], ui_cfg: dict[str, 
     candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
     return candidates
 
+def _has_available_node_for_current_route(nodes: list[dict[str, Any]], ui_cfg: dict[str, Any]) -> bool:
+    routing_mode = ui_cfg.get("routing_mode", "auto")
+    if routing_mode == "fixed_ip":
+        fixed_node_id = str(ui_cfg.get("fixed_node_id") or "").strip()
+        return bool(fixed_node_id and any(
+            n.get("id") == fixed_node_id and n.get("probe_status") == "available"
+            for n in nodes
+        ))
+    return bool(_select_available_candidates(nodes, ui_cfg))
+
 def auto_switch_node(attempt: int = 0) -> None:
     if attempt >= 3:
         print("[自动切换] 连续切换失败已达 3 次，停止切换以防止主线程死锁，将在后台重新加载节点...", flush=True)
@@ -1775,8 +1785,7 @@ def connect_node(node_id: str) -> str:
 def maintain_valid_nodes(force: bool = False, prefer_cached: bool = False) -> str:
     # prefer_cached=True(由 collector_loop 在非强制刷新时传入):OpenVPN 未运行时,
     # 优先用缓存中已检测可用的节点直接重连并提前返回,只有在没有任何可用缓存节点
-    # (或缓存节点连接均失败)时才落到下方的拉取+全量重测流程。这样 ml switch/auto/fix
-    # 触发的重启不会在仍有可用节点时白白拉取节点。
+    # 时才落到下方的拉取+全量重测流程。这样周期任务不会在仍有可用节点时白白拉取/检测。
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
     if not maintenance_lock.acquire(blocking=False):
@@ -1840,6 +1849,28 @@ def maintain_valid_nodes(force: bool = False, prefer_cached: bool = False) -> st
                         is_connecting = False
                         auto_switch_node()
                         is_connecting = True
+
+        if prefer_cached and not force and not active_openvpn_running():
+            ui_cfg = load_ui_config()
+            with lock:
+                cached_nodes = read_nodes()
+                has_available = _has_available_node_for_current_route(cached_nodes, ui_cfg)
+                valid_nodes_count = len([n for n in cached_nodes if n.get("probe_status") == "available"])
+            if has_available:
+                msg = f"缓存中已有 {valid_nodes_count} 个可用节点，跳过本轮周期拉取与节点检测。"
+                print(f"[周期检测] {msg}", flush=True)
+                log_to_json("INFO", "Main", msg)
+                set_state(
+                    last_check_at=time.time(),
+                    last_check_message=msg,
+                    valid_nodes=valid_nodes_count,
+                    is_connecting=False,
+                    connecting_phase="",
+                    scan_done=0,
+                    scan_total=0,
+                    scan_available=0,
+                )
+                return msg
 
         try:
             set_state(is_connecting=True, connecting_phase="fetching",
