@@ -3897,6 +3897,8 @@ let nodes=[], state={}, testingNodeIds = new Set();
 let currentPage = 1;
 const pageSize = 99999;
 let currentPageNodes = [];
+let filtersInitialized = false;
+let showFavoritesOnly = false;
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
@@ -4058,6 +4060,53 @@ function getFilteredNodes() {
     }
     return true;
   });
+}
+
+function initializeNodeFilters() {
+  if (filtersInitialized) return;
+  $("status_filter").value = "all";
+  $("country_filter").value = "";
+  $("ip_type_filter").value = "";
+  showFavoritesOnly = false;
+  filtersInitialized = true;
+}
+
+function resetNodeFilters() {
+  $("status_filter").value = "all";
+  $("country_filter").value = "";
+  $("ip_type_filter").value = "";
+  showFavoritesOnly = false;
+  currentPage = 1;
+  render();
+}
+
+function nodeStatusCounts() {
+  const counts = {available: 0, unavailable: 0, not_checked: 0, active: 0};
+  nodes.forEach(n => {
+    if (!n) return;
+    if (n.active) counts.active += 1;
+    const status = n.probe_status || "not_checked";
+    if (status === "available") counts.available += 1;
+    else if (status === "unavailable") counts.unavailable += 1;
+    else counts.not_checked += 1;
+  });
+  return counts;
+}
+
+function activeFilterSummary() {
+  const parts = [];
+  const statusSelect = $("status_filter");
+  const country = $("country_filter").value;
+  const ipTypeSelect = $("ip_type_filter");
+  if (statusSelect.value !== "all") {
+    parts.push(statusSelect.options[statusSelect.selectedIndex]?.textContent || statusSelect.value);
+  }
+  if (country) parts.push(country);
+  if (ipTypeSelect.value) {
+    parts.push(ipTypeSelect.options[ipTypeSelect.selectedIndex]?.textContent || ipTypeSelect.value);
+  }
+  if (showFavoritesOnly) parts.push("仅收藏");
+  return parts.length ? parts.join(" / ") : "全部节点";
 }
 
 function stableSortNodes() {
@@ -4256,7 +4305,18 @@ function render(){
 
   // Render table rows
   if (currentPageNodes.length === 0) {
-    $("rows").innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
+    if (nodes.length === 0) {
+      $("rows").innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">当前没有节点缓存。请点击“更新节点”拉取并检测节点。</td></tr>`;
+    } else {
+      const counts = nodeStatusCounts();
+      $("rows").innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 32px 0;">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:10px;">
+          <div>当前筛选无匹配节点：<strong style="color: var(--text-primary);">${esc(activeFilterSummary())}</strong></div>
+          <div style="font-size:12px;">缓存节点 ${nodes.length} 个 · 可用 ${counts.available} · 不可用 ${counts.unavailable} · 待检测 ${counts.not_checked}</div>
+          <button class="test-btn" type="button" onclick="resetNodeFilters()">清除过滤</button>
+        </div>
+      </td></tr>`;
+    }
   } else {
     $("rows").innerHTML=currentPageNodes.map(n=>{
       if (!n) return '';
@@ -4471,6 +4531,7 @@ async function load(){
   
   stableSortNodes();
   updateCountryFilter();
+  initializeNodeFilters();
   render();
 
   if (state.is_connecting) {
@@ -4559,8 +4620,6 @@ document.addEventListener("click", () => {
   if (adminDropdown) adminDropdown.style.display = "none";
   if (githubDropdown) githubDropdown.style.display = "none";
 });
-
-let showFavoritesOnly = false;
 
 function toggleFavoritesView() {
   showFavoritesOnly = !showFavoritesOnly;
