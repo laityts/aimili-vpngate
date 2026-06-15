@@ -16,6 +16,16 @@ class TimeoutResponse:
 
 
 class TestApiFetch(unittest.TestCase):
+    def test_public_fallback_urls_are_configured(self):
+        self.assertIn(
+            "https://seep.eu.org/https://www.vpngate.net/api/iphone/",
+            vpngate_manager.API_FALLBACK_URLS,
+        )
+        self.assertIn(
+            "https://cors.eu.org/https://www.vpngate.net/api/iphone/",
+            vpngate_manager.API_FALLBACK_URLS,
+        )
+
     def test_partial_response_is_returned_on_timeout(self):
         response = TimeoutResponse([b"*vpn_servers\n", b"#HostName,IP\nvpn1,1.1.1.1\n"])
 

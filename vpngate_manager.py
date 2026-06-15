@@ -107,6 +107,10 @@ def bounded_int(value: Any, default: int, min_value: int | None = None, max_valu
 # 通过 proxy.vlato.site 反代拉取官方 API,规避 www.vpngate.net 被 DNS 污染/封锁的问题
 # 反代格式: /proxy/{目标URL},返回内容与官方 API 完全一致
 API_URL = "https://proxy.vlato.site/proxy/https://www.vpngate.net/api/iphone/"
+API_FALLBACK_URLS = (
+    "https://seep.eu.org/https://www.vpngate.net/api/iphone/",
+    "https://cors.eu.org/https://www.vpngate.net/api/iphone/",
+)
 OFFICIAL_API_URL = "https://www.vpngate.net/api/iphone/"
 API_CONNECT_TIMEOUT_SECONDS = env_int("API_CONNECT_TIMEOUT_SECONDS", 8, 1, 60)
 API_FETCH_TIMEOUT_SECONDS = env_int("API_FETCH_TIMEOUT_SECONDS", 45, 5, 300)
@@ -894,9 +898,9 @@ def fetch_candidates() -> list[dict[str, Any]]:
     has_cache = len(cached_nodes()) > 0
     max_attempts = 1 if has_cache else 2
     
-    # 尝试 URLs 队列:优先反代,失败后再尝试官方直连。
+    # 尝试 URLs 队列:优先主反代,失败后尝试备用反代,最后尝试官方直连。
     attempts_targets: list[tuple[str, bool]] = []
-    for base_url in [API_URL, OFFICIAL_API_URL]:
+    for base_url in [API_URL, *API_FALLBACK_URLS, OFFICIAL_API_URL]:
         if any(existing_url == base_url and verify is True for existing_url, verify in attempts_targets):
             continue
         attempts_targets.append((base_url, True))
