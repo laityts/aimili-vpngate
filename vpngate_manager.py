@@ -6080,6 +6080,51 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "node": updated_node})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/apply_routing":
+            try:
+                ui_cfg = load_ui_config()
+                if not ui_cfg.get("connection_enabled", True):
+                    self.send_json({"ok": True, "running": False, "message": "连接总开关已禁用，路由配置已保存但不会自动连接"})
+                    return
+                if maintenance_lock.locked() or is_connecting:
+                    self.send_json({"ok": True, "running": True, "message": "已有节点维护或连接任务正在运行，新路由配置已保存，将由当前任务继续采纳"})
+                    return
+
+                routing_mode = ui_cfg.get("routing_mode", "auto")
+                fixed_node_id = str(ui_cfg.get("fixed_node_id") or "").strip()
+                if routing_mode == "fixed_ip" and not fixed_node_id:
+                    self.send_json({"ok": False, "error": "固定节点模式缺少 fixed_node_id"}, HTTPStatus.BAD_REQUEST)
+                    return
+
+                def apply_routing_worker() -> None:
+                    try:
+                        if routing_mode == "fixed_ip":
+                            connect_node(fixed_node_id)
+                            return
+
+                        if active_openvpn_running() or get_effective_active_node_id():
+                            clear_active_connection_state("正在按新路由配置重新选择 VPN 节点...")
+                        else:
+                            with lock:
+                                nodes = read_nodes()
+                                changed = False
+                                for item in nodes:
+                                    if item.get("active"):
+                                        item["active"] = False
+                                        changed = True
+                                if changed:
+                                    write_json(NODES_FILE, nodes)
+                        auto_switch_node()
+                    except Exception as exc:
+                        msg = f"应用路由配置失败: {exc}"
+                        print(f"[路由应用] {msg}", flush=True)
+                        log_to_json("ERROR", "VPN", msg)
+                        set_state(is_connecting=False, connecting_phase="", last_check_message=msg)
+
+                threading.Thread(target=apply_routing_worker, daemon=True).start()
+                self.send_json({"ok": True, "running": True, "message": "已通知后端按新路由配置重新选择节点"})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/test_proxy":
             try:
                 self.read_request_body()

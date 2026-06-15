@@ -359,6 +359,90 @@ def save_ui_auth(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     os.replace(tmp, UI_AUTH_PATH)
 
+def _api_base_candidates(cfg):
+    port = int(cfg.get("port", 8787) or 8787)
+    secret = str(cfg.get("secret_path") or "").strip()
+    host = str(cfg.get("host") or "127.0.0.1").strip()
+    hosts = []
+    if host in ("", "0.0.0.0", "127.0.0.1", "localhost"):
+        hosts.extend(["127.0.0.1", "localhost"])
+    elif host in ("::", "::1"):
+        hosts.extend(["[::1]", "127.0.0.1"])
+    elif ":" in host:
+        hosts.append(f"[{host.strip('[]')}]")
+    else:
+        hosts.extend([host, "127.0.0.1"])
+    seen = set()
+    bases = []
+    for h in hosts:
+        if h in seen:
+            continue
+        seen.add(h)
+        prefix = f"/{secret}" if secret else ""
+        bases.append(f"http://{h}:{port}{prefix}")
+    return bases
+
+def call_local_api(path, payload=None, timeout=8):
+    import json
+    import urllib.error
+    import urllib.request
+
+    cfg = load_ui_cfg()
+    username = str(cfg.get("username") or "admin")
+    password = str(cfg.get("password") or "")
+    if not password:
+        return False, {"error": "管理后台密码为空，无法通过本地 API 通知后端"}
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    body = json.dumps({"username": username, "password": password}).encode("utf-8")
+    last_error = ""
+    for base in _api_base_candidates(cfg):
+        try:
+            login_req = urllib.request.Request(
+                base + "/api/login",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with opener.open(login_req, timeout=timeout) as resp:
+                cookie = resp.headers.get("Set-Cookie", "").split(";", 1)[0]
+                if not cookie:
+                    last_error = "登录接口未返回会话 Cookie"
+                    continue
+
+            data = json.dumps(payload or {}).encode("utf-8")
+            req = urllib.request.Request(
+                base + path,
+                data=data,
+                headers={"Content-Type": "application/json", "Cookie": cookie},
+                method="POST",
+            )
+            with opener.open(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                return True, json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            try:
+                raw = e.read().decode("utf-8", errors="replace")
+                data = json.loads(raw) if raw else {}
+                last_error = data.get("error") or f"HTTP {e.code}"
+            except Exception:
+                last_error = f"HTTP {e.code}"
+        except Exception as e:
+            last_error = str(e)
+    return False, {"error": last_error or "无法连接本地管理 API"}
+
+def notify_backend(path, payload=None, timeout=8):
+    ok, data = call_local_api(path, payload, timeout=timeout)
+    if ok and data.get("ok", True):
+        msg = data.get("message")
+        if msg:
+            print(msg)
+        return True
+    err = data.get("error") if isinstance(data, dict) else str(data)
+    print(f"配置已保存，但未能通知后端即时执行: {err}")
+    print("可稍后运行 'ml current' 查看后台任务状态；如服务未运行，请执行 'ml start'。")
+    return False
+
 def list_nodes(return_only=False):
     nodes = sorted_nodes()
     if not return_only:
@@ -390,23 +474,10 @@ def list_nodes(return_only=False):
     return nodes
 
 def refresh_nodes():
-    # 通过重启服务触发后端维护线程立即重新拉取并检测节点。
-    # 写入强制刷新标记(内容为当前 Unix 时间戳):重启后 collector_loop 首轮检测到新鲜标记会强制
-    # 重新拉取节点,而非复用缓存(普通重启及 ml switch/auto/fix 默认复用缓存可用节点、不做不必要的拉取)。
-    # 写时间戳便于 consume 端丢弃陈旧标记:若 restart 失败/未真正重启,残留标记不会在日后某次无关重启时被误消费。
-    # 已知可接受的极低概率竞态:写标记在 restart 之前、旧守护进程仍在运行,理论上旧进程可能在被重启
-    # 杀死前的毫秒级窗口内抢先消费本标记;一旦发生,用户重跑 ml refresh 即可,无副作用。
-    flag_path = os.path.join(INSTALL_DIR, "vpngate_data", "force_refresh.flag")
-    try:
-        os.makedirs(os.path.dirname(flag_path), exist_ok=True)
-        with open(flag_path, "w", encoding="utf-8") as f:
-            f.write(str(int(time.time())))
-    except Exception:
-        pass
-    print("正在触发节点重新拉取(将重启服务以让后端立即执行拉取与检测)...", flush=True)
-    restart_service()
-    print("已触发。后端正在后台异步拉取最新节点并逐一检测可用性，")
-    print("通常需要数十秒至一两分钟。可稍后运行 'ml nodes' 查看最新列表，或 'ml current' 查看连接状态。")
+    print("正在触发节点重新拉取(不重启服务)...", flush=True)
+    if notify_backend("/api/refresh_nodes", {}, timeout=8):
+        print("后端正在后台异步拉取最新节点并逐一检测可用性，")
+        print("通常需要数十秒至一两分钟。可稍后运行 'ml nodes' 查看最新列表，或 'ml current' 查看连接状态。")
 
 def show_current():
     yellow = "\033[0;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"; cyan = "\033[0;36m"
@@ -525,8 +596,9 @@ def fix_node(selector=None):
     print(f"已设置为固定节点模式 -> {country} ({ip}) [ID: {node['id']}]")
     if was_disabled:
         print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
-    restart_service()
-    print("配置已生效，服务正在重启并连接该固定节点。可运行 'ml current' 查看状态。")
+    print("正在通知后端连接该固定节点(不重启服务)...")
+    if notify_backend("/api/connect", {"id": node["id"]}, timeout=75):
+        print("配置已生效。可运行 'ml current' 查看状态。")
 
 def auto_mode():
     cfg = load_ui_auth()
@@ -544,8 +616,9 @@ def auto_mode():
     print("后端将自动选择延迟最低的可用节点，当前节点不可用时会自动切换到最佳备用节点。")
     if was_disabled:
         print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
-    restart_service()
-    print("配置已生效，服务正在重启。可运行 'ml current' 查看状态。")
+    print("正在通知后端按自动模式重新选择节点(不重启服务)...")
+    if notify_backend("/api/apply_routing", {}, timeout=8):
+        print("配置已生效。可运行 'ml current' 查看状态。")
 
 def best_node(ip_type="all"):
     # 最佳节点:可用节点按延迟升序、评分降序;按 routing_ip_type 过滤以对齐后端 auto_switch_node 候选口径
@@ -598,8 +671,8 @@ def switch_node():
     if was_disabled:
         print(f"{yellow}注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。{reset}")
     print("正在切换到最佳可用节点...")
-    restart_service()
-    print("配置已生效,服务正在重启并连接最佳可用节点。可运行 'ml current' 查看状态。")
+    if notify_backend("/api/connect", {"id": best["id"]}, timeout=75):
+        print("配置已生效,后端正在连接最佳可用节点。可运行 'ml current' 查看状态。")
     print(f"{yellow}提示: 已启用自动模式,当前节点失效时会自动切换到下一个可用节点;如需锁定单一节点请用 'ml fix'。{reset}")
 
 # IP 出站类型过滤(与 Web UI / 后端 routing_ip_type 口径一致)
@@ -648,8 +721,9 @@ def set_iptype(value=None):
         return
     print(f"IP 出站类型过滤已切换为: {IP_TYPE_LABELS[value]}")
     print(f"{yellow}说明: 该过滤在自动选节点时生效;固定节点(ml fix)不受影响。{reset}")
-    restart_service()
-    print("配置已生效,服务正在重启并按新过滤重新选择节点。可运行 'ml current' 查看状态。")
+    print("正在通知后端按新过滤重新选择节点(不重启服务)...")
+    if notify_backend("/api/apply_routing", {}, timeout=8):
+        print("配置已生效。可运行 'ml current' 查看状态。")
 
 # 路由模式切换(ml mode):覆盖 auto/fixed_ip/fixed_region/favorites 四种模式。
 # 别名与编号统一归一化为规范模式值;输入不区分大小写、忽略首尾空白。
@@ -749,8 +823,9 @@ def _set_fixed_region(country=None):
     print(f"已切换到「固定地区: {green}{name}{reset}」(该国家缓存中有 {cnt} 个节点)。")
     if was_disabled:
         print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
-    restart_service()
-    print("配置已生效，服务正在重启并优先在该地区的缓存可用节点中连接。可运行 'ml current' 查看状态。")
+    print("正在通知后端按固定地区重新选择节点(不重启服务)...")
+    if notify_backend("/api/apply_routing", {}, timeout=8):
+        print("配置已生效。可运行 'ml current' 查看状态。")
     print(f"{yellow}说明: 若该地区当前无可用缓存节点,后端会自动拉取补齐;有可用节点时则直接复用,不重新拉取。{reset}")
 
 def _set_favorites():
@@ -773,8 +848,9 @@ def _set_favorites():
     print(f"已切换到「{green}收藏优先{reset}」模式(当前收藏 {len(fav_ids)} 个节点)。")
     if was_disabled:
         print("注意: 连接总开关原为【已禁用】,本次操作已重新启用连接。")
-    restart_service()
-    print("配置已生效，服务正在重启并优先在收藏节点中连接。可运行 'ml current' 查看状态。")
+    print("正在通知后端按收藏优先重新选择节点(不重启服务)...")
+    if notify_backend("/api/apply_routing", {}, timeout=8):
+        print("配置已生效。可运行 'ml current' 查看状态。")
 
 def set_routing_mode(value=None, arg=None):
     if value is None:
