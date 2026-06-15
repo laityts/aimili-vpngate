@@ -366,11 +366,31 @@ def read_nodes() -> list[dict[str, Any]]:
         return []
     return [item for item in raw if isinstance(item, dict)]
 
+def get_effective_active_node_id(
+    nodes: list[dict[str, Any]] | None = None,
+    state: dict[str, Any] | None = None,
+) -> str:
+    memory_id = str(active_openvpn_node_id or "").strip()
+    if memory_id:
+        return memory_id
+
+    if state is None:
+        state = read_json(STATE_FILE, {})
+    state_id = str(state.get("active_openvpn_node_id") or "").strip()
+    if state_id:
+        if nodes is None or any(item.get("id") == state_id for item in nodes):
+            return state_id
+
+    if nodes is None:
+        nodes = read_nodes()
+    active_node = next((item for item in nodes if item.get("active") and item.get("id")), None)
+    return str(active_node.get("id")) if active_node else ""
+
 def get_state() -> dict[str, Any]:
     global active_openvpn_node_id, is_connecting
     state = read_json(STATE_FILE, {})
     state.pop("password", None)
-    state["active_openvpn_node_id"] = active_openvpn_node_id
+    state["active_openvpn_node_id"] = get_effective_active_node_id(nodes=read_nodes(), state=state)
     state["is_connecting"] = is_connecting
     state.setdefault("api_url", API_URL)
     state.setdefault("target_valid_nodes", TARGET_VALID_NODES)
@@ -5492,11 +5512,13 @@ class Handler(BaseHTTPRequestHandler):
         if effective_path in ("/", "/index.html"):
             self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif effective_path == "/api/nodes":
-            global last_active_ping_time, last_active_latency, active_openvpn_node_id
+            global last_active_ping_time, last_active_latency
             nodes = read_nodes()
-            active_node = next((n for n in nodes if active_openvpn_node_id and n.get("id") == active_openvpn_node_id), None)
+            state = get_state()
+            effective_active_id = state.get("active_openvpn_node_id") or ""
+            active_node = next((n for n in nodes if effective_active_id and n.get("id") == effective_active_id), None)
             for n in nodes:
-                n["active"] = (active_openvpn_node_id and n.get("id") == active_openvpn_node_id)
+                n["active"] = bool(effective_active_id and n.get("id") == effective_active_id)
             if active_node:
                 ip = active_node.get("ip") or active_node.get("remote_host")
                 if ip:
@@ -5524,7 +5546,7 @@ class Handler(BaseHTTPRequestHandler):
                 if "config_text" in stripped:
                     del stripped["config_text"]
                 stripped_nodes.append(stripped)
-            self.send_json({"nodes": stripped_nodes, "state": get_state()})
+            self.send_json({"nodes": stripped_nodes, "state": state})
         elif effective_path.startswith("/configs/"):
             filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
             with lock:
@@ -5579,18 +5601,19 @@ class Handler(BaseHTTPRequestHandler):
                 "details": f"监听地址: {LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
                 "error": proxy_err
             }
+            effective_active_id = get_effective_active_node_id()
             ovpn_ok = active_openvpn_running()
             ovpn_err = ""
             ovpn_details = "未连接"
             if ovpn_ok:
-                ovpn_details = f"已连接节点: {active_openvpn_node_id}"
+                ovpn_details = f"已连接节点: {effective_active_id or active_openvpn_node_id}"
                 if sys.platform.startswith("linux"):
                     if not Path("/sys/class/net/tun0").exists():
                         ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
             else:
-                if active_openvpn_node_id:
+                if effective_active_id:
                     ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
-                    ovpn_details = f"尝试连接节点 {active_openvpn_node_id} 失败"
+                    ovpn_details = f"尝试连接节点 {effective_active_id} 失败"
             openvpn_status = {
                 "name": "OpenVPN 核心连接",
                 "status": "running" if ovpn_ok else "stopped",
