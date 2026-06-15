@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import os
 import tempfile
 import unittest
@@ -175,6 +176,92 @@ class TestSetRoutingModeDispatch(unittest.TestCase):
             fix.assert_not_called()
             region.assert_not_called()
             fav.assert_not_called()
+
+
+class TestExitInfoDisplay(unittest.TestCase):
+    def setUp(self):
+        self.ml = load_ml_module()
+
+    def test_current_shows_ippure_exit_info(self):
+        state = {
+            "active_openvpn_node_id": "node-1",
+            "active_node_latency": "80 ms",
+            "is_connecting": False,
+            "proxy_ok": True,
+            "proxy_ip": "198.51.100.8",
+            "proxy_latency_ms": 18,
+        }
+        info = {
+            "asn": 64500,
+            "asOrganization": "Example ASN",
+            "country": "Japan",
+            "isResidential": True,
+            "isBroadcast": False,
+            "fraudScore": 12,
+        }
+        with (
+            mock.patch.object(self.ml, "load_state", return_value=state),
+            mock.patch.object(self.ml, "load_ui_auth", return_value={
+                "proxy_port": 12345,
+                "routing_mode": "auto",
+                "connection_enabled": True,
+                "routing_ip_type": "all",
+            }),
+            mock.patch.object(self.ml, "get_active_node_info", return_value=("203.0.113.7", "日本")),
+            mock.patch.object(self.ml, "query_exit_info", return_value=info) as query_exit_info,
+            mock.patch("sys.stdout", new=io.StringIO()) as stdout,
+        ):
+            self.ml.show_current()
+
+        query_exit_info.assert_called_once_with(12345)
+        output = stdout.getvalue()
+        self.assertIn("出口归属 (ASN)", output)
+        self.assertIn("AS64500 Example ASN", output)
+        self.assertIn("出口国家", output)
+        self.assertIn("Japan", output)
+        self.assertIn("IP 类型", output)
+        self.assertIn("住宅IP", output)
+        self.assertIn("欺诈评分", output)
+        self.assertIn("12 [良好]", output)
+
+    def test_status_does_not_query_ippure_exit_info(self):
+        state = {
+            "active_openvpn_node_id": "node-1",
+            "active_node_latency": "80 ms",
+            "is_connecting": False,
+            "proxy_ok": True,
+            "proxy_ip": "198.51.100.8",
+            "proxy_latency_ms": 18,
+        }
+        with (
+            mock.patch.object(self.ml, "load_ui_cfg", return_value={
+                "host": "127.0.0.1",
+                "port": 8787,
+                "secret_path": "secret",
+                "username": "admin",
+                "password": "password",
+                "proxy_port": 12345,
+            }),
+            mock.patch.object(self.ml, "load_ui_auth", return_value={
+                "routing_mode": "auto",
+                "routing_ip_type": "all",
+            }),
+            mock.patch.object(self.ml, "load_state", return_value=state),
+            mock.patch.object(self.ml, "get_active_node_info", return_value=("203.0.113.7", "日本")),
+            mock.patch.object(self.ml, "check_port_listening", return_value=True),
+            mock.patch.object(self.ml, "check_service_active", return_value=True),
+            mock.patch.object(self.ml, "check_openvpn_process", return_value=True),
+            mock.patch.object(self.ml, "get_service_pid", return_value=1234),
+            mock.patch.object(self.ml, "query_exit_info") as query_exit_info,
+            mock.patch("sys.stdout", new=io.StringIO()) as stdout,
+        ):
+            self.ml.print_status()
+
+        query_exit_info.assert_not_called()
+        output = stdout.getvalue()
+        self.assertIn("出口 IP (出站)", output)
+        self.assertNotIn("出口归属 (ASN)", output)
+        self.assertNotIn("欺诈评分", output)
 
 
 if __name__ == "__main__":

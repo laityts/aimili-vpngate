@@ -483,6 +483,7 @@ def show_current():
     yellow = "\033[0;33m"; green = "\033[1;32m"; red = "\033[1;31m"; bold = "\033[1m"; reset = "\033[0m"; cyan = "\033[0;36m"
     state = load_state()
     cfg = load_ui_auth()
+    proxy_port = cfg.get("proxy_port", 7928)
     routing_mode = cfg.get("routing_mode", "auto")
     connection_enabled = cfg.get("connection_enabled", True)
     active_ip, active_loc = get_active_node_info()
@@ -513,6 +514,29 @@ def show_current():
         proxy_ip = state.get("proxy_ip", "-")
         if proxy_ok and proxy_ip and proxy_ip != "-":
             print(format_line("出口 IP (出站)", f"{bold}{proxy_ip}{reset}", label_color=cyan))
+            info = query_exit_info(proxy_port)
+            if info:
+                asn = info.get("asn")
+                org = info.get("asOrganization") or ""
+                asn_str = f"AS{asn} {org}".strip() if asn else (org or "-")
+                print(format_line("出口归属 (ASN)", asn_str, label_color=cyan))
+                print(format_line("出口国家", info.get("country") or "-", label_color=cyan))
+                is_res = info.get("isResidential")
+                ip_kind = "住宅IP" if is_res else "机房IP"
+                kind_color = green if is_res else yellow
+                broadcast = "是" if info.get("isBroadcast") else "否"
+                print(format_line("IP 类型", f"{kind_color}{ip_kind}{reset} · 广播: {broadcast}", label_color=cyan))
+                fraud = _fraud_label(info.get("fraudScore"))
+                if fraud:
+                    if "[良好]" in fraud:
+                        fc, fs = green, "✓"
+                    elif "[一般]" in fraud:
+                        fc, fs = yellow, "!"
+                    else:
+                        fc, fs = red, "✗"
+                    print(format_line("欺诈评分", f"{fc}{fs} {fraud}{reset}", label_color=cyan))
+            else:
+                print(format_line("出口归属 (ASN)", f"{yellow}[! 查询失败/超时]{reset}", label_color=cyan))
             pl = state.get("proxy_latency_ms", 0)
             print(format_line("本地代理延迟", _latency_color(f"{pl} ms" if pl else "检测中...", green, yellow, red, reset), label_color=cyan))
         else:
@@ -1064,7 +1088,7 @@ def _progress_bar(done, total, width=20):
     filled = int(width * pct / 100)
     return "█" * filled + "░" * (width - filled), pct
 
-def print_status(with_exit_info=False):
+def print_status():
     cfg = load_ui_cfg()
     ui_port = cfg.get("port", 8787)
     secret_path = cfg.get("secret_path", "EJsW2EeBo9lY")
@@ -1140,31 +1164,6 @@ def print_status(with_exit_info=False):
         print_line(format_line("节点延迟 (直连测试)", _latency_color(latency, green, yellow, red, reset), label_color=cyan))
         if proxy_ok and proxy_ip and proxy_ip != "-":
             print_line(format_line("出口 IP (出站)", f"{bold}{proxy_ip}{reset}", label_color=cyan))
-            # 出口归属详情:仅 ml status 页面经本地代理实时查询 ippure
-            if with_exit_info:
-                info = query_exit_info(proxy_port)
-                if info:
-                    asn = info.get("asn")
-                    org = info.get("asOrganization") or ""
-                    asn_str = f"AS{asn} {org}".strip() if asn else (org or "-")
-                    print_line(format_line("出口归属 (ASN)", asn_str, label_color=cyan))
-                    print_line(format_line("出口国家", info.get("country") or "-", label_color=cyan))
-                    is_res = info.get("isResidential")
-                    ip_kind = "住宅IP" if is_res else "机房IP"
-                    kind_color = green if is_res else yellow
-                    broadcast = "是" if info.get("isBroadcast") else "否"
-                    print_line(format_line("IP 类型", f"{kind_color}{ip_kind}{reset} · 广播: {broadcast}", label_color=cyan))
-                    fraud = _fraud_label(info.get("fraudScore"))
-                    if fraud:
-                        if "[良好]" in fraud:
-                            fc, fs = green, "✓"
-                        elif "[一般]" in fraud:
-                            fc, fs = yellow, "!"
-                        else:
-                            fc, fs = red, "✗"
-                        print_line(format_line("欺诈评分", f"{fc}{fs} {fraud}{reset}", label_color=cyan))
-                else:
-                    print_line(format_line("出口归属 (ASN)", f"{yellow}[! 查询失败/超时]{reset}", label_color=cyan))
             print_line(format_line("本地代理延迟", _latency_color(f"{proxy_latency} ms" if proxy_latency else "检测中...", green, yellow, red, reset), label_color=cyan))
         else:
             proxy_err = state.get("proxy_error") or "检测中/未就绪"
@@ -1582,8 +1581,7 @@ def main():
             try:
                 while True:
                     print("\033[H\033[J", end="")
-                    print("\033[0;33m正在查询出口 IP 归属信息(经本地代理)...\033[0m", flush=True)
-                    print_status(with_exit_info=True)
+                    print_status()
                     print_line("\n\033[0;33m提示: 当前为静态页面。按 [回车键/Enter] 手动刷新状态，按 [q] 或 [Ctrl+C] 退出...\033[0m")
                     print("\033[J", end="", flush=True)
                     
