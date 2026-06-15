@@ -136,11 +136,10 @@ STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
 UPSTREAM_PROXY_AUTH_FILE = DATA_DIR / "upstream_proxy_auth.txt"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
-# 强制刷新标记:由 `ml refresh`(经重启服务)写入,内容为写入时的 Unix 时间戳;collector_loop
-# 首轮检测到新鲜标记后本轮强制重新拉取节点;缺失时(ml switch/auto/fix 及普通重启)优先复用缓存中
-# 的可用节点,不做不必要的拉取。web "更新节点" 走 /api/refresh_nodes 直接后台拉取(即时反馈),不经此标记。
+# 强制刷新标记:兼容旧版 `ml refresh` 经重启服务写入的 Unix 时间戳;新版 ml/web 刷新直接走
+# /api/refresh_nodes 后台强制拉取。普通周期任务优先复用缓存可用节点,不做不必要的拉取。
 FORCE_REFRESH_FLAG = DATA_DIR / "force_refresh.flag"
-# 标记最长有效期:正常 ml refresh→重启→首轮消费通常在数十秒内完成;超过此阈值仍未被消费的标记
+# 标记最长有效期:旧版 ml refresh→重启→首轮消费通常在数十秒内完成;超过此阈值仍未被消费的标记
 # 视为陈旧(如 restart 失败/未真正重启导致残留)直接丢弃,避免日后某次无关重启误触发强制拉取。
 FORCE_REFRESH_MAX_AGE_SECONDS = 300
 
@@ -6063,7 +6062,7 @@ class Handler(BaseHTTPRequestHandler):
                 if maintenance_lock.locked():
                     self.send_json({"ok": True, "message": "节点维护任务正在运行，请稍后再试", "running": True})
                 else:
-                    threading.Thread(target=maintain_valid_nodes, args=(False,), daemon=True).start()
+                    threading.Thread(target=maintain_valid_nodes, args=(True,), daemon=True).start()
                     self.send_json({"ok": True, "message": "已在后台启动节点更新流程", "running": False})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
