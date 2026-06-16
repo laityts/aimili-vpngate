@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -173,6 +174,74 @@ class TestWebStateSync(unittest.TestCase):
         self.assertEqual(node["last_failed_at"], 0)
         self.assertEqual(node["unavailable_until"], 0)
         self.assertFalse(self.manager.node_in_backoff(node))
+
+    def test_clear_node_backoff_removes_persistent_blacklist_entry(self):
+        node = {"id": "node-a", "ip": "203.0.113.1"}
+        self.manager.mark_node_unavailable(node, "connect timeout")
+
+        self.assertIn("node-a", self.manager.load_blacklist())
+
+        self.manager.clear_node_backoff(node)
+
+        self.assertNotIn("node-a", self.manager.load_blacklist())
+
+    def test_fixed_ip_backoff_skips_refresh_and_keeps_cached_node(self):
+        node = {
+            "id": "node-a",
+            "probe_status": "unavailable",
+            "last_failed_at": 123,
+            "unavailable_until": 9999999999,
+        }
+        write_json(self.manager.NODES_FILE, [node])
+
+        with mock.patch.object(
+            self.manager,
+            "load_ui_config",
+            return_value={
+                "routing_mode": "fixed_ip",
+                "fixed_node_id": "node-a",
+                "connection_enabled": True,
+            },
+        ), mock.patch.object(
+            self.manager,
+            "fetch_candidates",
+            side_effect=AssertionError("退避中的固定节点不应触发节点拉取"),
+        ):
+            msg = self.manager.maintain_valid_nodes()
+
+        self.assertIn("固定节点 node-a 正在失败退避期内", msg)
+        self.assertEqual([n["id"] for n in self.manager.read_nodes()], ["node-a"])
+
+    def test_fixed_ip_retry_failure_skips_refresh_and_keeps_cached_node(self):
+        node = {
+            "id": "node-a",
+            "probe_status": "available",
+            "last_failed_at": 0,
+            "unavailable_until": 0,
+        }
+        write_json(self.manager.NODES_FILE, [node])
+
+        with mock.patch.object(
+            self.manager,
+            "load_ui_config",
+            return_value={
+                "routing_mode": "fixed_ip",
+                "fixed_node_id": "node-a",
+                "connection_enabled": True,
+            },
+        ), mock.patch.object(
+            self.manager,
+            "connect_node",
+            side_effect=RuntimeError("connect timeout"),
+        ), mock.patch.object(
+            self.manager,
+            "fetch_candidates",
+            side_effect=AssertionError("固定节点重连失败后不应触发节点拉取"),
+        ):
+            msg = self.manager.maintain_valid_nodes()
+
+        self.assertIn("固定节点 node-a 重连失败", msg)
+        self.assertEqual([n["id"] for n in self.manager.read_nodes()], ["node-a"])
 
 
 if __name__ == "__main__":

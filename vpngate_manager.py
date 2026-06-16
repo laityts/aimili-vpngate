@@ -871,6 +871,15 @@ def mark_blacklisted(node: dict[str, Any], message: str) -> None:
     }
     write_json(BLACKLIST_FILE, blacklist)
 
+def clear_blacklisted(node: dict[str, Any]) -> None:
+    node_id = str(node.get("id") or "").strip()
+    if not node_id:
+        return
+    blacklist = load_blacklist()
+    if node_id in blacklist:
+        blacklist.pop(node_id, None)
+        write_json(BLACKLIST_FILE, blacklist)
+
 def node_in_backoff(node: dict[str, Any], now: float | None = None) -> bool:
     if now is None:
         now = time.time()
@@ -892,6 +901,7 @@ def mark_node_unavailable(node: dict[str, Any], message: str) -> None:
 def clear_node_backoff(node: dict[str, Any]) -> None:
     node["last_failed_at"] = 0
     node["unavailable_until"] = 0
+    clear_blacklisted(node)
 
 def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     ip = row.get("IP", "")
@@ -1841,16 +1851,25 @@ def maintain_valid_nodes(force: bool = False, prefer_cached: bool = False) -> st
                                 connect_node(target_id)
                             except Exception as e:
                                 print(f"[维护线程] 重新拉起固定节点 {target_id} 失败: {e}", flush=True)
+                                msg = f"固定节点 {target_id} 重连失败，已进入失败退避期: {e}"
+                                set_state(
+                                    is_connecting=False,
+                                    connecting_phase="",
+                                    last_check_message=msg,
+                                )
+                                return msg
                             is_connecting = True
                             # 固定节点已在缓存中且重连成功:无需再拉取节点,直接返回
                             if prefer_cached and active_openvpn_running():
                                 return "已连接缓存中的固定节点，跳过节点拉取"
                         elif fixed_node:
+                            msg = f"固定节点 {target_id} 正在失败退避期内，暂不重复重连或刷新节点"
                             set_state(
                                 is_connecting=False,
                                 connecting_phase="",
-                                last_check_message=f"固定节点 {target_id} 正在失败退避期内，暂不重复重连",
+                                last_check_message=msg,
                             )
+                            return msg
                 elif prefer_cached:
                     # 优先复用缓存:OpenVPN 已确认未运行,nodes.json 中残留的 active 标志已失效,
                     # 先清除以便上一轮的活动节点也能作为候选;若存在匹配当前路由的可用缓存节点,
